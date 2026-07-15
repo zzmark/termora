@@ -3,6 +3,7 @@ package app.termora
 import app.termora.database.DatabaseManager
 import app.termora.plugin.Extension
 import app.termora.plugin.ExtensionManager
+import app.termora.terminal.CustomTheme
 import com.formdev.flatlaf.FlatLaf
 import com.formdev.flatlaf.extras.FlatAnimatedLafChange
 import com.jthemedetecor.OsThemeDetector
@@ -28,7 +29,8 @@ internal class ThemeManager private constructor() {
     }
 
     val appearance by lazy { DatabaseManager.getInstance().appearance }
-    val themes = mapOf(
+    private val themeSettings by lazy { DatabaseManager.getInstance().theme }
+    private val standardThemes = mapOf(
         "Light" to LightLaf::class.java.name,
         "Dark" to DarkLaf::class.java.name,
         "Dracula" to DraculaLaf::class.java.name,
@@ -57,6 +59,14 @@ internal class ThemeManager private constructor() {
         "Chalk" to ChalkLaf::class.java.name,
     )
 
+    val themes: Map<String, String>
+        get() = buildMap {
+            themeSettings.themes().forEach {
+                put(it.name, if (it.dark) DatabaseDarkLaf::class.java.name else DatabaseLightLaf::class.java.name)
+            }
+            putAll(standardThemes)
+        }
+
 
     /**
      * 当前的主题
@@ -64,6 +74,9 @@ internal class ThemeManager private constructor() {
     val theme: String
         get() {
             val themeClass = UIManager.getLookAndFeel().javaClass.name
+            if (themeClass == DatabaseLightLaf::class.java.name || themeClass == DatabaseDarkLaf::class.java.name) {
+                return themeSettings.activeTheme().name
+            }
             for (e in themes.entries) {
                 if (e.value == themeClass) {
                     return e.key
@@ -95,9 +108,16 @@ internal class ThemeManager private constructor() {
 
 
     fun change(classname: String, immediate: Boolean = false) {
+        val customTheme = themeSettings.findByName(classname)
+        val oldCustomThemeId = themeSettings.activeThemeId
+        if (customTheme != null) {
+            themeSettings.activeThemeId = customTheme.id
+        }
         val themeClassname = themes.getOrDefault(classname, classname)
 
-        if (UIManager.getLookAndFeel().javaClass.name == themeClassname) {
+        if (UIManager.getLookAndFeel().javaClass.name == themeClassname &&
+            (customTheme == null || oldCustomThemeId == customTheme.id)
+        ) {
             return
         }
 
@@ -110,6 +130,24 @@ internal class ThemeManager private constructor() {
             FlatLaf.updateUI()
             FlatAnimatedLafChange.hideSnapshotWithAnimation()
         }
+
+        ExtensionManager.getInstance().getExtensions(ThemeChangeExtension::class.java)
+            .forEach { it.onChanged() }
+    }
+
+    fun isThemeNameAvailable(name: String, except: CustomTheme? = null): Boolean {
+        if (name.isBlank()) return false
+        if (standardThemes.keys.any { it.equals(name, true) }) return false
+        return themeSettings.themes().none { it.id != except?.id && it.name.equals(name, true) }
+    }
+
+    /** Re-installs the current Look & Feel so database-backed colors are read again. */
+    fun reload() {
+        val classname = UIManager.getLookAndFeel().javaClass.name
+        FlatAnimatedLafChange.showSnapshot()
+        immediateChange(classname)
+        FlatLaf.updateUI()
+        FlatAnimatedLafChange.hideSnapshotWithAnimation()
 
         ExtensionManager.getInstance().getExtensions(ThemeChangeExtension::class.java)
             .forEach { it.onChanged() }

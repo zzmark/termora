@@ -14,6 +14,9 @@ import app.termora.macro.MacroManager
 import app.termora.plugin.internal.extension.DynamicExtensionHandler
 import app.termora.snippet.SnippetManager
 import app.termora.terminal.CursorStyle
+import app.termora.terminal.CustomTheme
+import app.termora.terminal.DatabaseColorTheme
+import app.termora.terminal.TerminalColor
 import org.apache.commons.io.FileUtils
 import org.apache.commons.lang3.StringUtils
 import org.jetbrains.exposed.v1.core.and
@@ -46,6 +49,7 @@ class DatabaseManager private constructor() : Disposable {
     val properties by lazy { Properties(this) }
     val terminal by lazy { Terminal(this) }
     val appearance by lazy { Appearance(this) }
+    val theme by lazy { Theme(this) }
     val sftp by lazy { SFTP(this) }
 
 
@@ -761,6 +765,86 @@ class DatabaseManager private constructor() : Disposable {
          * 透明度
          */
         var opacity by DoublePropertyDelegate(1.0)
+    }
+
+    /** 自定义主题及其颜色设置。 */
+    class Theme(databaseManager: DatabaseManager) : IProperties(databaseManager, "Setting.Theme") {
+        private var themesJson by StringPropertyDelegate("[]")
+        internal var activeThemeId by StringPropertyDelegate(CustomTheme.LIGHT_ID)
+        private var cachedThemesJson: String? = null
+        private var cachedThemes = emptyList<CustomTheme>()
+
+        internal fun themes(): List<CustomTheme> {
+            if (cachedThemesJson == themesJson) return cachedThemes
+            val saved = runCatching { ohMyJson.decodeFromString<List<CustomTheme>>(themesJson) }
+                .getOrDefault(emptyList())
+            val light = saved.firstOrNull { it.id == CustomTheme.LIGHT_ID }
+                ?.copy(dark = false) ?: CustomTheme.light
+            val dark = saved.firstOrNull { it.id == CustomTheme.DARK_ID }
+                ?.copy(dark = true) ?: CustomTheme.dark
+            cachedThemesJson = themesJson
+            cachedThemes = listOf(light, dark) + saved.filterNot { it.builtIn }
+            return cachedThemes
+        }
+
+        internal fun activeTheme(): CustomTheme {
+            return themes().firstOrNull { it.id == activeThemeId } ?: CustomTheme.light
+        }
+
+        internal fun findByName(name: String): CustomTheme? {
+            return themes().firstOrNull { it.name == name }
+        }
+
+        internal fun copy(source: CustomTheme, name: String): CustomTheme {
+            require(themes().none { it.name.equals(name, true) }) { "Theme name already exists" }
+            val theme = CustomTheme(UUID.randomUUID().toString(), name, source.dark)
+            saveThemes(themes() + theme)
+            DatabaseColorTheme.colors.keys.forEach { setColor(theme.id, it, getColor(source.id, it)) }
+            return theme
+        }
+
+        internal fun rename(theme: CustomTheme, name: String): CustomTheme {
+            require(themes().none { it.id != theme.id && it.name.equals(name, true) }) { "Theme name already exists" }
+            val renamed = theme.copy(name = name)
+            saveThemes(themes().map { if (it.id == theme.id) renamed else it })
+            return renamed
+        }
+
+        internal fun delete(theme: CustomTheme): Boolean {
+            if (theme.builtIn) return false
+            saveThemes(themes().filterNot { it.id == theme.id })
+            if (activeThemeId == theme.id) {
+                activeThemeId = if (theme.dark) CustomTheme.DARK_ID else CustomTheme.LIGHT_ID
+            }
+            return true
+        }
+
+        internal fun getColor(themeId: String, color: TerminalColor): Int {
+            val theme = themes().firstOrNull { it.id == themeId } ?: CustomTheme.light
+            val defaultColor = DatabaseColorTheme.getDefaultColor(theme.dark, color)
+            val value = getString(key(theme.id, color)) ?: return defaultColor
+            return value.removePrefix("#").toIntOrNull(16)?.and(0xffffff) ?: defaultColor
+        }
+
+        internal fun setColor(themeId: String, color: TerminalColor, value: Int) {
+            putString(key(themeId, color), "#%06X".format(value and 0xffffff))
+        }
+
+        internal fun reset(theme: CustomTheme) {
+            DatabaseColorTheme.colors.keys.forEach {
+                setColor(theme.id, it, DatabaseColorTheme.getDefaultColor(theme.dark, it))
+            }
+        }
+
+        private fun saveThemes(themes: List<CustomTheme>) {
+            themesJson = ohMyJson.encodeToString(themes)
+            cachedThemesJson = themesJson
+            cachedThemes = themes
+        }
+
+        private fun key(themeId: String, color: TerminalColor): String {
+            return "$themeId.${DatabaseColorTheme.colors.getValue(color)}"
+        }
     }
 
     /**

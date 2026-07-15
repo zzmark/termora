@@ -1,6 +1,7 @@
 package app.termora
 
 import app.termora.terminal.ColorTheme
+import app.termora.terminal.DatabaseColorTheme
 import app.termora.terminal.TerminalColor
 import com.formdev.flatlaf.FlatDarkLaf
 import com.formdev.flatlaf.FlatLightLaf
@@ -12,6 +13,36 @@ import java.util.*
 interface LafTag
 interface LightLafTag : LafTag
 interface DarkLafTag : LafTag
+
+class DatabaseLightLaf : FlatPropertiesLaf("Custom Light", Properties().apply {
+    val theme = DatabaseColorTheme()
+    putAll(
+        mapOf(
+            "@baseTheme" to "light",
+            "@background" to "#%06X".format(theme.getColor(TerminalColor.Basic.BACKGROUND) and 0xffffff),
+            "@windowText" to "#%06X".format(theme.getColor(TerminalColor.Basic.FOREGROUND) and 0xffffff),
+        )
+    )
+}), ColorTheme, LightLafTag {
+    private val theme = DatabaseColorTheme()
+
+    override fun getColor(color: TerminalColor): Int = theme.getColor(color)
+}
+
+class DatabaseDarkLaf : FlatPropertiesLaf("Custom Dark", Properties().apply {
+    val theme = DatabaseColorTheme()
+    putAll(
+        mapOf(
+            "@baseTheme" to "dark",
+            "@background" to "#%06X".format(theme.getColor(TerminalColor.Basic.BACKGROUND) and 0xffffff),
+            "@windowText" to "#%06X".format(theme.getColor(TerminalColor.Basic.FOREGROUND) and 0xffffff),
+        )
+    )
+}), ColorTheme, DarkLafTag {
+    private val theme = DatabaseColorTheme()
+
+    override fun getColor(color: TerminalColor): Int = theme.getColor(color)
+}
 
 class DraculaLaf : FlatPropertiesLaf("Dracula", Properties().apply {
     putAll(

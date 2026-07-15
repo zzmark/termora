@@ -5,9 +5,13 @@ import app.termora.actions.AnActionEvent
 import app.termora.actions.DataProviders
 import app.termora.database.DatabaseManager
 import app.termora.keymap.KeymapPanel
+import app.termora.highlight.MyColorPickerDialog
 import app.termora.plugin.ExtensionManager
 import app.termora.terminal.CursorStyle
+import app.termora.terminal.CustomTheme
 import app.termora.terminal.DataKey
+import app.termora.terminal.DatabaseColorTheme
+import app.termora.terminal.TerminalColor
 import app.termora.terminal.panel.FloatingToolbarPanel
 import app.termora.terminal.panel.TerminalPanel
 import app.termora.transfer.TransportTerminalTab
@@ -28,7 +32,10 @@ import com.sun.jna.platform.win32.WinDef
 import org.apache.commons.lang3.StringUtils
 import org.apache.commons.lang3.SystemUtils
 import java.awt.BorderLayout
+import java.awt.Color
 import java.awt.Component
+import java.awt.FlowLayout
+import java.awt.GridLayout
 import java.awt.Toolkit
 import java.awt.event.ActionEvent
 import java.awt.event.ItemEvent
@@ -46,6 +53,7 @@ class SettingsOptionsPane : OptionsPane() {
     private val owner get() = SwingUtilities.getWindowAncestor(this@SettingsOptionsPane)
     private val database get() = DatabaseManager.getInstance()
     private val extensionManager get() = ExtensionManager.getInstance()
+    private val appearanceOption = AppearanceOption()
 
     companion object {
         private val localShells by lazy { loadShells() }
@@ -88,7 +96,8 @@ class SettingsOptionsPane : OptionsPane() {
         val extensions = extensionManager.getExtensions(SettingsOptionExtension::class.java)
         val options = mutableListOf<Option>()
 
-        options.add(AppearanceOption())
+        options.add(appearanceOption)
+        options.add(ThemeColorOption())
         options.add(TerminalOption())
         options.add(KeyShortcutsOption())
         options.add(SFTPOption())
@@ -108,6 +117,236 @@ class SettingsOptionsPane : OptionsPane() {
         super.addOption(option)
     }
 
+    private inner class ThemeColorOption : JPanel(BorderLayout()), Option {
+        private val themeManager = ThemeManager.getInstance()
+        private val themeSettings get() = database.theme
+        private val themeComboBox = FlatComboBox<CustomTheme>()
+        private val colorsPanel = JPanel(GridLayout(0, 2, 12, 8))
+        private val renameButton = JButton(Icons.edit)
+        private val deleteButton = JButton(Icons.delete)
+
+        init {
+            themeComboBox.renderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?,
+                    value: Any?,
+                    index: Int,
+                    isSelected: Boolean,
+                    cellHasFocus: Boolean
+                ): Component {
+                    return super.getListCellRendererComponent(
+                        list,
+                        (value as? CustomTheme)?.name ?: value,
+                        index,
+                        isSelected,
+                        cellHasFocus
+                    )
+                }
+            }
+            refreshThemes(themeSettings.activeTheme().id)
+            themeComboBox.addItemListener {
+                if (it.stateChange == ItemEvent.SELECTED) {
+                    refreshColors()
+                    updateActions()
+                }
+            }
+
+            val resetButton = JButton(I18n.getString("termora.settings.theme.reset"), Icons.revert)
+            resetButton.addActionListener {
+                val result = JOptionPane.showConfirmDialog(
+                    owner,
+                    I18n.getString("termora.settings.theme.reset-confirm"),
+                    I18n.getString("termora.settings.theme.reset"),
+                    JOptionPane.OK_CANCEL_OPTION,
+                )
+                if (result != JOptionPane.OK_OPTION) return@addActionListener
+                themeSettings.reset(selectedTheme())
+                refreshColors()
+                reloadActiveTheme()
+            }
+
+            val addButton = JButton(Icons.add)
+            addButton.toolTipText = I18n.getString("termora.settings.theme.add")
+            addButton.addActionListener { copyTheme() }
+            renameButton.toolTipText = I18n.getString("termora.settings.theme.rename")
+            renameButton.addActionListener { renameTheme() }
+            deleteButton.toolTipText = I18n.getString("termora.settings.theme.delete")
+            deleteButton.addActionListener { deleteTheme() }
+
+            val toolbar = JPanel(FlowLayout(FlowLayout.LEADING, 8, 0))
+            toolbar.add(JLabel("${I18n.getString("termora.settings.theme.scheme")}:"))
+            toolbar.add(themeComboBox)
+            toolbar.add(addButton)
+            toolbar.add(renameButton)
+            toolbar.add(deleteButton)
+            toolbar.add(resetButton)
+
+            val scrollPane = JScrollPane(colorsPanel)
+            scrollPane.border = BorderFactory.createEmptyBorder()
+            scrollPane.verticalScrollBar.unitIncrement = 16
+
+            add(toolbar, BorderLayout.NORTH)
+            add(scrollPane, BorderLayout.CENTER)
+            border = BorderFactory.createEmptyBorder(6, 0, 0, 0)
+            refreshColors()
+            updateActions()
+        }
+
+        private fun refreshThemes(selectedId: String? = selectedThemeOrNull()?.id) {
+            val themes = themeSettings.themes()
+            themeComboBox.removeAllItems()
+            themes.forEach { themeComboBox.addItem(it) }
+            themeComboBox.selectedItem = themes.firstOrNull { it.id == selectedId } ?: themes.first()
+        }
+
+        private fun copyTheme() {
+            val source = selectedTheme()
+            val name = askThemeName(
+                I18n.getString("termora.settings.theme.add"),
+                I18n.getString("termora.settings.theme.copy-name", source.name),
+                "${source.name} Copy"
+            ) ?: return
+            if (!themeManager.isThemeNameAvailable(name)) {
+                showNameExists()
+                return
+            }
+            val theme = themeSettings.copy(source, name)
+            refreshThemes(theme.id)
+            appearanceOption.refreshThemes()
+        }
+
+        private fun renameTheme() {
+            val theme = selectedTheme()
+            val name = askThemeName(
+                I18n.getString("termora.settings.theme.rename"),
+                I18n.getString("termora.settings.theme.name"),
+                theme.name
+            ) ?: return
+            if (!themeManager.isThemeNameAvailable(name, theme)) {
+                showNameExists()
+                return
+            }
+            val renamed = themeSettings.rename(theme, name)
+            replaceAppearanceTheme(theme.name, renamed.name)
+            refreshThemes(renamed.id)
+            appearanceOption.refreshThemes(renamed.name)
+        }
+
+        private fun deleteTheme() {
+            val theme = selectedTheme()
+            if (theme.builtIn) return
+            val result = JOptionPane.showConfirmDialog(
+                owner,
+                I18n.getString("termora.settings.theme.delete-confirm", theme.name),
+                I18n.getString("termora.settings.theme.delete"),
+                JOptionPane.OK_CANCEL_OPTION,
+            )
+            if (result != JOptionPane.OK_OPTION) return
+
+            val wasActive = themeManager.theme == theme.name
+            themeSettings.delete(theme)
+            val replacementId = if (theme.dark) CustomTheme.DARK_ID else CustomTheme.LIGHT_ID
+            val replacement = themeSettings.themes().first { it.id == replacementId }
+            replaceAppearanceTheme(theme.name, replacement.name)
+            refreshThemes(replacement.id)
+            appearanceOption.refreshThemes(replacement.name)
+            if (wasActive) SwingUtilities.invokeLater { themeManager.reload() }
+        }
+
+        private fun askThemeName(title: String, message: String, initialValue: String): String? {
+            val value = JOptionPane.showInputDialog(
+                owner,
+                message,
+                title,
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                null,
+                initialValue,
+            ) as? String ?: return null
+            return value.trim().takeIf { it.isNotEmpty() }
+        }
+
+        private fun showNameExists() {
+            JOptionPane.showMessageDialog(
+                owner,
+                I18n.getString("termora.settings.theme.name-exists"),
+                I18n.getString("termora.settings.theme.name"),
+                JOptionPane.WARNING_MESSAGE,
+            )
+        }
+
+        private fun replaceAppearanceTheme(oldName: String, newName: String) {
+            val appearance = database.appearance
+            if (appearance.theme == oldName) appearance.theme = newName
+            if (appearance.lightTheme == oldName) appearance.lightTheme = newName
+            if (appearance.darkTheme == oldName) appearance.darkTheme = newName
+        }
+
+        private fun updateActions() {
+            val selected = selectedThemeOrNull()
+            renameButton.isEnabled = selected != null
+            deleteButton.isEnabled = selected != null && !selected.builtIn
+        }
+
+        private fun refreshColors() {
+            colorsPanel.removeAll()
+            val theme = selectedTheme()
+            DatabaseColorTheme.colors.forEach { (color, key) ->
+                val button = JButton()
+                button.horizontalAlignment = SwingConstants.LEADING
+                button.addActionListener { chooseColor(color, button) }
+                updateButton(button, themeSettings.getColor(theme.id, color))
+
+                val panel = JPanel(BorderLayout(8, 0))
+                panel.add(JLabel(I18n.getString("termora.settings.theme.color.$key")), BorderLayout.CENTER)
+                panel.add(button, BorderLayout.EAST)
+                colorsPanel.add(panel)
+            }
+            colorsPanel.revalidate()
+            colorsPanel.repaint()
+        }
+
+        private fun chooseColor(themeColor: TerminalColor, button: JButton) {
+            val theme = selectedTheme()
+            val current = Color(themeSettings.getColor(theme.id, themeColor))
+            val dialog = MyColorPickerDialog(owner)
+            dialog.colorPicker.color = current
+            dialog.setLocationRelativeTo(owner)
+            dialog.isVisible = true
+            val color = dialog.color ?: return
+
+            themeSettings.setColor(theme.id, themeColor, color.rgb)
+            updateButton(button, color.rgb)
+            reloadActiveTheme()
+        }
+
+        private fun updateButton(button: JButton, rgb: Int) {
+            val value = rgb and 0xffffff
+            button.text = "#%06X".format(value)
+            button.icon = ColorIcon(color = Color(value))
+        }
+
+        private fun reloadActiveTheme() {
+            if (themeManager.theme == selectedTheme().name) {
+                SwingUtilities.invokeLater { themeManager.reload() }
+            }
+        }
+
+        private fun selectedTheme(): CustomTheme = themeComboBox.selectedItem as CustomTheme
+
+        private fun selectedThemeOrNull(): CustomTheme? = themeComboBox.selectedItem as? CustomTheme
+
+        override fun getIcon(isSelected: Boolean): Icon = Icons.colors
+
+        override fun getTitle(): String = I18n.getString("termora.settings.theme")
+
+        override fun getIdentifier(): String = "Theme"
+
+        override fun getAnchor(): OptionsPane.Anchor = OptionsPane.Anchor.After("Appearance")
+
+        override fun getJComponent(): JComponent = this
+    }
+
     private inner class AppearanceOption : JPanel(BorderLayout()), Option {
         val themeManager = ThemeManager.getInstance()
         val themeComboBox = FlatComboBox<String>()
@@ -119,6 +358,7 @@ class SettingsOptionsPane : OptionsPane() {
         val followSystemCheckBox = JCheckBox(I18n.getString("termora.settings.appearance.follow-system"))
         val preferredThemeBtn = JButton(Icons.settings)
         val opacitySpinner = NumberSpinner(100, 0, 100)
+        private var refreshingThemes = false
 
         private val appearance get() = database.appearance
 
@@ -190,8 +430,7 @@ class SettingsOptionsPane : OptionsPane() {
             confirmTabCloseComBoBox.selectedItem = appearance.confirmTabClose
 
             themeComboBox.isEnabled = !followSystemCheckBox.isSelected
-            themeManager.themes.keys.forEach { themeComboBox.addItem(it) }
-            themeComboBox.selectedItem = themeManager.theme
+            refreshThemes()
 
             I18n.getLanguages().forEach { languageComboBox.addItem(it.key) }
             languageComboBox.selectedItem = appearance.language
@@ -218,7 +457,7 @@ class SettingsOptionsPane : OptionsPane() {
 
         private fun initEvents() {
             themeComboBox.addItemListener {
-                if (it.stateChange == ItemEvent.SELECTED) {
+                if (it.stateChange == ItemEvent.SELECTED && !refreshingThemes) {
                     appearance.theme = themeComboBox.selectedItem as String
                     SwingUtilities.invokeLater { themeManager.change(themeComboBox.selectedItem as String) }
                 }
@@ -294,6 +533,15 @@ class SettingsOptionsPane : OptionsPane() {
 
             preferredThemeBtn.addActionListener { showPreferredThemeContextmenu() }
 
+        }
+
+        fun refreshThemes(selectedTheme: String = themeManager.theme) {
+            refreshingThemes = true
+            themeComboBox.removeAllItems()
+            themeManager.themes.keys.forEach { themeComboBox.addItem(it) }
+            themeComboBox.selectedItem = selectedTheme.takeIf { themeManager.themes.containsKey(it) }
+                ?: themeManager.theme
+            refreshingThemes = false
         }
 
         override fun getIcon(isSelected: Boolean): Icon {
