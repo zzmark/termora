@@ -75,8 +75,13 @@ class DatabaseManager private constructor() : Disposable {
             transaction(database) { SchemaUtils.create(UnsafeSettingEntity) }
         }
 
-        // 获取密钥信息
-        transaction(database) { DatabaseSecret.getInstance(database) }
+        // 获取密钥信息。
+        // 注意：不能用 transaction { } 包裹本调用。DatabaseSecret.init → loadOrUnlockSecret
+        // 在主密码启用时会通过 SwingUtilities.invokeAndWait 在 EDT 上做 DB 读（解锁流程）；
+        // 若主线程在此持有 sqlite 事务锁，EDT 的 DB 操作会等待该锁，而主线程又在
+        // invokeAndWait 等 EDT → 死锁（启动卡死、解锁框不显示）。DatabaseSecret.init 内部
+        // 已自行通过 UnsafeSettingRepository 开事务，无需外层包裹。
+        DatabaseSecret.getInstance(database)
 
         // 设置数据库版本号，便于后续升级
         if (isExists.not()) {

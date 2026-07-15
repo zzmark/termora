@@ -40,6 +40,9 @@ class ApplicationRunner {
         // 打印系统信息
         printSystemInfo()
 
+        // 解锁对话框外观：临时默认主题（不读 DB），setupLaf() 之后会被用户主题覆盖
+        com.formdev.flatlaf.FlatLightLaf.setup()
+
         // 打开数据库
         openDatabase()
 

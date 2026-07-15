@@ -101,6 +101,7 @@ class SettingsOptionsPane : OptionsPane() {
         options.add(TerminalOption())
         options.add(KeyShortcutsOption())
         options.add(SFTPOption())
+        options.add(app.termora.masterpassword.SecurityOption())
         options.add(AboutOption())
 
         for (extension in extensions) {
