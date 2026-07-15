@@ -3,13 +3,18 @@ package app.termora
 import app.termora.plugin.internal.ssh.SshClients
 import org.apache.sshd.client.session.ClientSession
 import org.testcontainers.containers.GenericContainer
+import org.testcontainers.images.builder.ImageFromDockerfile
+import kotlin.io.path.Path
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.assertTrue
 
 
 abstract class SSHDTest {
-    protected val sshd: GenericContainer<*> = GenericContainer("sshd")
+    protected val sshd: GenericContainer<*> = GenericContainer(
+        ImageFromDockerfile("sshd")
+            .withFileFromPath(".", Path("src/test/resources/sshd"))
+    )
         .withEnv("PUID", "1000")
         .withEnv("PGID", "1000")
         .withEnv("TZ", "Etc/UTC")

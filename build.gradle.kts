@@ -542,31 +542,31 @@ fun packOnWindows(distributionDir: Directory, finalFilenameWithoutExtension: Str
         workingDir = dir
     }
 
-    // exe
-    cfg.writeText(StringBuilder(configText).appendLine("java-options=-Djpackage.app-layout=exe").toString())
-    exec {
-        commandLine(
-            "iscc",
-            "/DMyAppId=${projectName}",
-            "/DMyAppName=${projectName}",
-            "/DMyAppVersion=${appVersion}",
-            "/DMyOutputDir=${distributionDir.asFile.absolutePath}",
-            "/DMySetupIconFile=${FileUtils.getFile(projectDir, "src", "main", "resources", "icons", "termora.ico")}",
-            "/DMyWizardSmallImageFile=${
-                FileUtils.getFile(
-                    projectDir,
-                    "src",
-                    "main",
-                    "resources",
-                    "icons",
-                    "termora_128x128.bmp"
-                )
-            }",
-            "/DMySourceDir=${FileUtils.getFile(dir, projectName).absolutePath}",
-            "/F${finalFilenameWithoutExtension}",
-            FileUtils.getFile(projectDir, "src", "main", "resources", "termora.iss")
-        )
-    }
+//    // exe
+//    cfg.writeText(StringBuilder(configText).appendLine("java-options=-Djpackage.app-layout=exe").toString())
+//    exec {
+//        commandLine(
+//            "iscc",
+//            "/DMyAppId=${projectName}",
+//            "/DMyAppName=${projectName}",
+//            "/DMyAppVersion=${appVersion}",
+//            "/DMyOutputDir=${distributionDir.asFile.absolutePath}",
+//            "/DMySetupIconFile=${FileUtils.getFile(projectDir, "src", "main", "resources", "icons", "termora.ico")}",
+//            "/DMyWizardSmallImageFile=${
+//                FileUtils.getFile(
+//                    projectDir,
+//                    "src",
+//                    "main",
+//                    "resources",
+//                    "icons",
+//                    "termora_128x128.bmp"
+//                )
+//            }",
+//            "/DMySourceDir=${FileUtils.getFile(dir, projectName).absolutePath}",
+//            "/F${finalFilenameWithoutExtension}",
+//            FileUtils.getFile(projectDir, "src", "main", "resources", "termora.iss")
+//        )
+//    }
 
 }
 
