@@ -365,6 +365,19 @@ tasks.register<Exec>("jlink") {
         "--output",
         "${layout.buildDirectory.get()}/jlink"
     )
+
+    doLast {
+        val includeAotLauncher = (os.isWindows && !isAppx) || (os.isLinux && !isDeb)
+        if (includeAotLauncher) {
+            val executable = if (os.isWindows) "java.exe" else "java"
+            val source = FileUtils.getFile(Jvm.current().javaHome, "bin", executable)
+            val target = layout.buildDirectory.file("jlink/bin/$executable").get().asFile
+            FileUtils.copyFile(source, target)
+            if (os.isLinux && !target.setExecutable(true, false)) {
+                throw GradleException("Unable to make ${target.absolutePath} executable")
+            }
+        }
+    }
 }
 
 tasks.register<Exec>("jpackage") {

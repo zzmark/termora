@@ -41,6 +41,7 @@ class TermoraRestarter {
     }
 
     val isSupported get() = !restarting.get() && checkIsSupported()
+    val isRestartScheduled get() = restarting.get()
 
     private val restarting = AtomicBoolean(false)
     private val isLinuxAppImage by lazy { System.getenv("LinuxAppImage")?.toBoolean() == true }
@@ -50,6 +51,22 @@ class TermoraRestarter {
             Application.getAppPath(),
             "/Contents/MacOS/Termora"
         )
+    }
+
+    fun restartAfterCurrentProcess(commands: List<String>): Boolean {
+        if (commands.isEmpty()) return false
+        if (!restarting.compareAndSet(false, true)) return false
+
+        return try {
+            Restarter.restart(commands.toTypedArray())
+            true
+        } catch (e: Exception) {
+            restarting.set(false)
+            if (log.isErrorEnabled) {
+                log.error(e.message, e)
+            }
+            false
+        }
     }
 
     private fun restart(commands: List<String>) {

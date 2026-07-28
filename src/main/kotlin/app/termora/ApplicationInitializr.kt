@@ -1,5 +1,6 @@
 package app.termora
 
+import app.termora.aot.AotCacheManager
 import com.formdev.flatlaf.FlatSystemProperties
 import com.formdev.flatlaf.util.SystemInfo
 import com.pty4j.util.PtyUtil
@@ -32,6 +33,9 @@ class ApplicationInitializr {
 
         // 设置 tinylog
         setupTinylog()
+
+        // AOT cache 必须在应用初始化之前选择 record/create/normal 模式
+        AotCacheManager.prepare()
 
         // 检查是否单例
         checkSingleton()
