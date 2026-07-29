@@ -144,6 +144,10 @@ application {
         args.add("-Dawt.toolkit.name=XToolkit")
     }
 
+    if (os.isWindows) {
+        args.add("--enable-native-access=ALL-UNNAMED")
+    }
+
     args.add("-DTERMORA_PLUGIN_DIRECTORY=${layout.buildDirectory.get().asFile.absolutePath}${File.separator}plugins")
 
     applicationDefaultJvmArgs = args
@@ -182,7 +186,36 @@ publishing {
     }
 }
 
+val rdpActiveXHostSource = layout.projectDirectory.file("src/main/csharp/RdpActiveXHost.cs")
+val rdpActiveXHostOutput = layout.buildDirectory.file("generated/rdp/RdpActiveXHost.exe")
+val compileRdpActiveXHost by tasks.registering(Exec::class) {
+    onlyIf { os.isWindows }
+    inputs.file(rdpActiveXHostSource)
+    outputs.file(rdpActiveXHostOutput)
+    doFirst {
+        FileUtils.forceMkdirParent(rdpActiveXHostOutput.get().asFile)
+    }
+    print("build RdpActiveXHost.exe")
+    executable("${System.getenv("WINDIR") ?: "C:\\Windows"}/Microsoft.NET/Framework64/v4.0.30319/csc.exe")
+    args(
+        "/nologo",
+        "/target:exe",
+        "/out:${rdpActiveXHostOutput.get().asFile.absolutePath}",
+        "/reference:System.Windows.Forms.dll",
+        "/reference:System.Drawing.dll",
+        "/reference:Microsoft.CSharp.dll",
+        rdpActiveXHostSource.asFile.absolutePath,
+    )
+}
+
 tasks.processResources {
+    if (os.isWindows) {
+        dependsOn(compileRdpActiveXHost)
+        from(rdpActiveXHostOutput) {
+            into("app/termora/rdp")
+        }
+    }
+
     val betaVersion = project.version.toString().substringAfterLast('.')
     filesMatching("**/AppxManifest.xml") {
         filter<ReplaceTokens>(
@@ -411,6 +444,10 @@ tasks.register<Exec>("jpackage") {
         if (isDeb) {
             options.add("-Djpackage.app-layout=deb")
         }
+    }
+
+    if (os.isWindows) {
+        options.add("--enable-native-access=ALL-UNNAMED")
     }
 
     val arguments = mutableListOf("${Jvm.current().javaHome}/bin/jpackage")

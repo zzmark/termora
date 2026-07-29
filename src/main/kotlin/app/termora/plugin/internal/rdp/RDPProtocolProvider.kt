@@ -29,7 +29,7 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
     }
 
     override fun createTerminalTab(dataProvider: DataProvider, windowScope: WindowScope, host: Host): TerminalTab {
-        TODO()
+        return RDPTerminalTab(windowScope, host)
     }
 
     override fun getIcon(width: Int, height: Int): DynamicIcon {
@@ -37,6 +37,9 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
     }
 
     override fun canCreateTerminalTab(dataProvider: DataProvider, windowScope: WindowScope, host: Host): Boolean {
+        if (SystemInfo.isWindows) {
+            return true
+        }
         openRDP(windowScope, host)
         return false
     }
