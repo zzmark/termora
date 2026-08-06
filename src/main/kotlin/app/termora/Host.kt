@@ -164,6 +164,11 @@ data class Options(
     val tags: List<String> = emptyList(),
 
     /**
+     * 顶部主机标签页颜色。预设使用颜色名，自定义颜色使用 #RRGGBB。
+     */
+    val color: String = StringUtils.EMPTY,
+
+    /**
      * 扩展，如果要使用此
      */
     val extras: Map<String, String> = emptyMap(),

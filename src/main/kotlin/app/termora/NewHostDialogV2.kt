@@ -255,7 +255,7 @@ class NewHostDialogV2(
                 authentication = host.authentication,
                 proxy = host.proxy,
                 remark = host.remark,
-                options = host.options.copy(extras = extras, tags = tags),
+                options = host.options.copy(extras = extras, tags = tags, color = editHost.options.color),
                 tunnelings = host.tunnelings,
             )
         }

@@ -8,6 +8,7 @@ import app.termora.keymap.KeyShortcut
 import app.termora.keymap.KeymapManager
 import com.formdev.flatlaf.extras.components.FlatTabbedPane
 import com.formdev.flatlaf.ui.FlatTabbedPaneUI
+import com.formdev.flatlaf.ui.FlatUIUtils
 import org.apache.commons.lang3.StringUtils
 import java.awt.*
 import java.awt.event.*
@@ -109,6 +110,7 @@ internal class MyTabbedPane : FlatTabbedPane(), Disposable {
     override fun updateUI() {
         super.updateUI()
         setUI(MyMyTabbedPaneUI())
+        SwingUtilities.invokeLater { terminalTabbedManager?.refreshTerminalTabs() }
     }
 
     private inner class MyAWTEventListener : AWTEventListener {
@@ -330,6 +332,26 @@ internal class MyTabbedPane : FlatTabbedPane(), Disposable {
     }
 
     private inner class MyMyTabbedPaneUI : FlatTabbedPaneUI() {
+        override fun getTabBackground(tabPlacement: Int, tabIndex: Int, isSelected: Boolean): Color {
+            val tabBackground = tabPane.getBackgroundAt(tabIndex)
+            if (tabBackground == tabPane.background) {
+                return super.getTabBackground(tabPlacement, tabIndex, isSelected)
+            }
+
+            val stateBackground = when {
+                hoverColor != null && rolloverTab == tabIndex -> hoverColor
+                focusColor != null && isSelected && FlatUIUtils.isPermanentFocusOwner(tabPane) -> focusColor
+                selectedBackground != null && isSelected -> selectedBackground
+                else -> null
+            } ?: return tabBackground
+
+            return HostTabColor.blend(
+                tabBackground,
+                FlatUIUtils.deriveColor(stateBackground, tabPane.background),
+                0.2f,
+            )
+        }
+
         override fun paintIcon(
             g: Graphics,
             tabPlacement: Int,

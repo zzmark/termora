@@ -5,6 +5,7 @@ import app.termora.account.AccountManager
 import app.termora.actions.*
 import app.termora.database.DatabaseChangedExtension
 import app.termora.database.DatabaseManager
+import app.termora.database.DataType
 import app.termora.findeverywhere.BasicFilterFindEverywhereProvider
 import app.termora.findeverywhere.FindEverywhereProvider
 import app.termora.findeverywhere.FindEverywhereProviderExtension
@@ -139,6 +140,20 @@ class TerminalTabbed(
                 }
             }).let { Disposer.register(this, it) }
 
+        DynamicExtensionHandler.getInstance()
+            .register(DatabaseChangedExtension::class.java, object : DatabaseChangedExtension {
+                override fun onDataChanged(
+                    id: String,
+                    type: String,
+                    action: DatabaseChangedExtension.Action,
+                    source: DatabaseChangedExtension.Source,
+                ) {
+                    if (type == DataType.Host.name && tabs.any { it is HostTerminalTab && it.host.id == id }) {
+                        refreshTerminalTabs()
+                    }
+                }
+            }).let { Disposer.register(this, it) }
+
     }
 
     private fun removeTabAt(index: Int, disposable: Boolean = true, reconnect: Boolean = false) {
@@ -262,6 +277,20 @@ class TerminalTabbed(
             }
         })
 
+        val persistedHost = (tab as? HostTerminalTab)?.let { HostManager.getInstance().getHost(it.host.id) }
+        val colorMenu = createHostColorMenu(windowScope.window, persistedHost?.options?.color.orEmpty()) { color ->
+            val host = (tab as? HostTerminalTab)?.let { HostManager.getInstance().getHost(it.host.id) }
+                ?: return@createHostColorMenu
+            HostManager.getInstance().addHost(
+                host.copy(
+                    options = host.options.copy(color = color),
+                    updateDate = System.currentTimeMillis(),
+                )
+            )
+        }
+        colorMenu.isEnabled = persistedHost != null
+        popupMenu.add(colorMenu)
+
         // 在新窗口中打开
         val openInNewWindow = popupMenu.add(I18n.getString("termora.tabbed.contextmenu.open-in-new-window"))
         openInNewWindow.addActionListener(object : AnAction() {
@@ -341,6 +370,7 @@ class TerminalTabbed(
         val title = (c.getClientProperty(titleProperty) ?: tab.getTitle()).toString()
 
         tabbedPane.insertTab(title, tab.getIcon(), c, StringUtils.EMPTY, index)
+        refreshTabBackground(index, tab)
 
         // 设置标题
         c.putClientProperty(titleProperty, title)
@@ -361,7 +391,20 @@ class TerminalTabbed(
     override fun refreshTerminalTabs() {
         for (i in 0 until tabbedPane.tabCount) {
             tabbedPane.setTabClosable(i, tabs[i].canClose())
+            refreshTabBackground(i, tabs[i])
         }
+    }
+
+    private fun refreshTabBackground(index: Int, tab: TerminalTab) {
+        val host = if (tab is HostTerminalTab) {
+            HostManager.getInstance().getHost(tab.host.id) ?: tab.host
+        } else {
+            null
+        }
+        val background = host?.let {
+            HostTabColor.resolve(it.options.color, tabbedPane.background)
+        } ?: tabbedPane.background
+        tabbedPane.setBackgroundAt(index, background)
     }
 
     override fun indexOfTerminalTab(tab: TerminalTab): Int {

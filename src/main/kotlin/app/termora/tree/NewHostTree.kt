@@ -36,6 +36,7 @@ import org.jdesktop.swingx.action.ActionManager
 import org.slf4j.LoggerFactory
 import org.w3c.dom.Element
 import org.w3c.dom.NodeList
+import java.awt.Color
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.datatransfer.Transferable
@@ -347,6 +348,14 @@ class NewHostTree : SimpleTree(), Disposable {
         popupMenu.add(newMenu)
         popupMenu.addSeparator()
         val tagsMenu = popupMenu.add(JMenu(I18n.getString("termora.tag"))) as JMenu
+        val colorMenu = createHostColorMenu(owner, lastHost.options.color) { color ->
+            lastNode.host = lastHost.copy(
+                options = lastHost.options.copy(color = color),
+                updateDate = System.currentTimeMillis(),
+            )
+            simpleTreeModel.nodeStructureChanged(lastNode)
+        }
+        popupMenu.add(colorMenu)
         val showMenu = popupMenu.add(JMenu(I18n.getString("termora.welcome.contextmenu.show"))) as JMenu
         val showMoreInfo = showMenu.add(JCheckBoxMenuItem(I18n.getString("termora.welcome.contextmenu.show.more-info")))
         val showTags = showMenu.add(JCheckBoxMenuItem(I18n.getString("termora.welcome.contextmenu.show.tags")))
@@ -466,6 +475,7 @@ class NewHostTree : SimpleTree(), Disposable {
         copy.isEnabled = remove.isEnabled
         rename.isEnabled = remove.isEnabled
         property.isEnabled = lastNode.isFolder.not() && hasTeamNode.not()
+        colorMenu.isEnabled = property.isEnabled
         refresh.isEnabled = lastNode.isFolder
         importMenu.isEnabled = lastNode.isFolder
 
@@ -531,6 +541,7 @@ class NewHostTree : SimpleTree(), Disposable {
                         importMenu.isEnabled = false
                         newMenu.isEnabled = false
                         tagsMenu.isEnabled = false
+                        colorMenu.isEnabled = false
                         break
                     }
                 }
