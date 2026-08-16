@@ -59,6 +59,7 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
     val tokenTextField = OutlinePasswordField(255)
     val gistTextField = OutlineTextField(255)
     val policyComboBox = JComboBox<SyncPolicy>()
+    val periodicSyncIntervalComboBox = JComboBox<SyncInterval>()
     val domainTextField = object : OutlineTextField(255) {
         // https://github.com/TermoraDev/termora/issues/1445
         override fun paste() {
@@ -141,6 +142,13 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
         policyComboBox.addItemListener {
             if (it.stateChange == ItemEvent.SELECTED) {
                 sync.policy = (policyComboBox.selectedItem as SyncPolicy).name
+            }
+        }
+
+        periodicSyncIntervalComboBox.addItemListener {
+            if (it.stateChange == ItemEvent.SELECTED) {
+                sync.periodicSyncInterval = periodicSyncIntervalComboBox.selectedItem as SyncInterval
+                SyncManager.getInstance().reschedulePeriodicSync()
             }
         }
 
@@ -315,6 +323,7 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
             hostsCheckBox.isEnabled = false
             snippetsCheckBox.isEnabled = false
             domainTextField.isEnabled = false
+            periodicSyncIntervalComboBox.isEnabled = false
             syncConfigButton.text = "${SyncI18n.getString("termora.settings.sync")}..."
         }
 
@@ -342,6 +351,7 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
             gistTextField.isEnabled = true
             tokenTextField.isEnabled = true
             domainTextField.isEnabled = true
+            periodicSyncIntervalComboBox.isEnabled = true
             keywordHighlightsCheckBox.isEnabled = true
             syncConfigButton.text = SyncI18n.getString("termora.settings.sync")
         }
@@ -388,6 +398,7 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
 
         policyComboBox.addItem(SyncPolicy.Manual)
         policyComboBox.addItem(SyncPolicy.OnChange)
+        SyncInterval.entries.forEach(periodicSyncIntervalComboBox::addItem)
 
         hostsCheckBox.isFocusable = false
         snippetsCheckBox.isFocusable = false
@@ -408,6 +419,7 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
         } else if (sync.policy == SyncPolicy.OnChange.name) {
             policyComboBox.selectedItem = SyncPolicy.OnChange
         }
+        periodicSyncIntervalComboBox.selectedItem = sync.periodicSyncInterval
 
         typeComboBox.selectedItem = sync.type
         gistTextField.text = sync.gist
@@ -474,6 +486,27 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
             }
         }
 
+        periodicSyncIntervalComboBox.renderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean
+            ): Component {
+                val key = when (value as? SyncInterval) {
+                    SyncInterval.Disabled -> "disabled"
+                    SyncInterval.OneMinute -> "1m"
+                    SyncInterval.FiveMinutes -> "5m"
+                    SyncInterval.TenMinutes -> "10m"
+                    SyncInterval.OneHour -> "1h"
+                    null -> "disabled"
+                }
+                val text = SyncI18n.getString("termora.settings.sync.periodic.$key")
+                return super.getListCellRendererComponent(list, text, index, isSelected, cellHasFocus)
+            }
+        }
+
         val lastSyncTime = sync.lastSyncTime
         lastSyncTimeLabel.text = "${SyncI18n.getString("termora.settings.sync.last-sync-time")}: ${
             if (lastSyncTime > 0) DateFormatUtils.format(
@@ -501,7 +534,7 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
     private fun getCenterComponent(): JComponent {
         val layout = FormLayout(
             "left:pref, $formMargin, default:grow, 30dlu",
-            "pref, $formMargin, pref, $formMargin, pref, $formMargin, pref, $formMargin, pref, $formMargin, pref, $formMargin, pref"
+            "pref, $formMargin, pref, $formMargin, pref, $formMargin, pref, $formMargin, pref, $formMargin, pref, $formMargin, pref, $formMargin, pref"
         )
 
         val rangeBox = FormBuilder.create()
@@ -556,12 +589,18 @@ class CloudSyncOption : JPanel(BorderLayout()), OptionsPane.PluginOption {
         syncPolicyBox.add(Box.createHorizontalGlue())
         syncPolicyBox.add(Box.createHorizontalGlue())
 
+        val periodicSyncBox = Box.createHorizontalBox()
+        periodicSyncBox.add(periodicSyncIntervalComboBox)
+        periodicSyncBox.add(Box.createHorizontalGlue())
+
         builder.add("${tokenText}:").xy(1, rows)
             .add(if (isWebDAV) gistTextField else tokenTextField).xy(3, rows).apply { rows += step }
             .add("${gistText}:").xy(1, rows)
             .add(if (isWebDAV) tokenTextField else gistTextField).xy(3, rows).apply { rows += step }
             .add("${SyncI18n.getString("termora.settings.sync.policy")}:").xy(1, rows)
             .add(syncPolicyBox).xy(3, rows).apply { rows += step }
+            .add("${SyncI18n.getString("termora.settings.sync.periodic")}:").xy(1, rows)
+            .add(periodicSyncBox).xy(3, rows).apply { rows += step }
             .add("${SyncI18n.getString("termora.settings.sync.range")}:").xy(1, rows)
             .add(rangeBox).xy(3, rows).apply { rows += step }
             // Sync buttons

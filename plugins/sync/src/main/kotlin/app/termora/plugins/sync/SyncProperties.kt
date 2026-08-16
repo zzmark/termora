@@ -28,6 +28,17 @@ class SyncProperties private constructor(databaseManager: DatabaseManager) :
         }
     }
 
+    private inner class SyncIntervalPropertyDelegate(defaultValue: SyncInterval) :
+        PropertyDelegate<SyncInterval>(defaultValue) {
+        override fun convertValue(value: String): SyncInterval {
+            return try {
+                SyncInterval.valueOf(value)
+            } catch (_: Exception) {
+                initializer.invoke()
+            }
+        }
+    }
+
     /**
      * 同步类型
      */
@@ -67,4 +78,9 @@ class SyncProperties private constructor(databaseManager: DatabaseManager) :
      * 同步策略，为空就是默认手动
      */
     var policy by StringPropertyDelegate(StringUtils.EMPTY)
+
+    /**
+     * 定时同步间隔，默认关闭
+     */
+    var periodicSyncInterval by SyncIntervalPropertyDelegate(SyncInterval.Disabled)
 }

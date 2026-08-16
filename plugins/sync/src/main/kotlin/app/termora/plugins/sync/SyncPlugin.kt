@@ -1,5 +1,6 @@
 package app.termora.plugins.sync
 
+import app.termora.FrameExtension
 import app.termora.SettingsOptionExtension
 import app.termora.database.DatabaseChangedExtension
 import app.termora.plugin.Extension
@@ -11,6 +12,7 @@ class SyncPlugin : Plugin {
 
     init {
         support.addExtension(SettingsOptionExtension::class.java) { SyncSettingsOptionExtension.instance }
+        support.addExtension(FrameExtension::class.java) { SyncManager.getInstance() }
         support.addExtension(DatabaseChangedExtension::class.java) { SyncDatabaseChangedExtension.instance }
         support.addExtension(DatabaseChangedExtension::class.java) { DeleteDataManager.getInstance() }
     }
