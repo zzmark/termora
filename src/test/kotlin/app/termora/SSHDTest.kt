@@ -46,9 +46,11 @@ abstract class SSHDTest {
         sshd.stop()
     }
 
-    fun newClientSession(): ClientSession {
+    fun newClientSession(
+        progressListener: SshClients.ConnectionProgressListener = SshClients.ConnectionProgressListener {},
+    ): ClientSession {
         val client = SshClients.openClient(host)
-        val session = SshClients.openSession(host, client)
+        val session = SshClients.openSession(host, client, progressListener)
         assertTrue(session.isOpen)
         return session
     }

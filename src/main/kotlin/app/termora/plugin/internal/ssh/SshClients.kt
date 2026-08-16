@@ -21,7 +21,6 @@ import org.apache.sshd.client.channel.ClientChannelEvent
 import org.apache.sshd.client.config.hosts.HostConfigEntry
 import org.apache.sshd.client.config.hosts.HostConfigEntryResolver
 import org.apache.sshd.client.config.hosts.KnownHostEntry
-import org.apache.sshd.client.kex.DHGClient
 import org.apache.sshd.client.keyverifier.KnownHostsServerKeyVerifier
 import org.apache.sshd.client.keyverifier.ModifiedServerKeyAcceptor
 import org.apache.sshd.client.keyverifier.ServerKeyVerifier
@@ -35,7 +34,6 @@ import org.apache.sshd.common.channel.ChannelFactory
 import org.apache.sshd.common.channel.PtyChannelConfiguration
 import org.apache.sshd.common.channel.PtyChannelConfigurationHolder
 import org.apache.sshd.common.cipher.CipherNone
-import org.apache.sshd.common.compression.BuiltinCompressions
 import org.apache.sshd.common.config.keys.KeyRandomArt
 import org.apache.sshd.common.config.keys.KeyUtils
 import org.apache.sshd.common.future.CloseFuture
@@ -45,11 +43,10 @@ import org.apache.sshd.common.io.IoConnectFuture
 import org.apache.sshd.common.io.IoConnector
 import org.apache.sshd.common.io.IoServiceEventListener
 import org.apache.sshd.common.io.IoSession
-import org.apache.sshd.common.kex.BuiltinDHFactories
 import org.apache.sshd.common.keyprovider.KeyIdentityProvider
+import org.apache.sshd.common.kex.KexProposalOption
 import org.apache.sshd.common.session.Session
 import org.apache.sshd.common.session.SessionListener
-import org.apache.sshd.common.signature.BuiltinSignatures
 import org.apache.sshd.common.util.net.SshdSocketAddress
 import org.apache.sshd.core.CoreModuleProperties
 import org.apache.sshd.server.forward.AcceptAllForwardingFilter
@@ -85,7 +82,36 @@ import kotlin.math.max
 @Suppress("CascadeIf")
 object SshClients {
 
+    enum class ConnectionStage {
+        Connecting,
+        TransportConnected,
+        ServerIdentified,
+        ClientAlgorithmsOffered,
+        ServerAlgorithmsOffered,
+        AlgorithmsNegotiated,
+        KeyExchangeFailed,
+        AlgorithmWarning,
+        Authenticating,
+        Authenticated,
+    }
+
+    data class ConnectionProgress(
+        val stage: ConnectionStage,
+        val host: Host,
+        val session: ClientSession? = null,
+        val algorithms: Map<KexProposalOption, String>? = null,
+        val error: Throwable? = null,
+    )
+
+    fun interface ConnectionProgressListener {
+        fun onProgress(progress: ConnectionProgress)
+    }
+
     val HOST_KEY = AttributeRepository.AttributeKey<Host>()
+    private val KEX_FAILURE = AttributeRepository.AttributeKey<Throwable>()
+    private val KEX_CLIENT_PROPOSAL_REPORTER =
+        AttributeRepository.AttributeKey<(Map<KexProposalOption, String>) -> Unit>()
+    private const val ALGORITHM_EXTRAS = "SshAlgorithmExtras"
 
     private val hostManager get() = HostManager.Companion.getInstance()
     private val log by lazy { LoggerFactory.getLogger(SshClients::class.java) }
@@ -159,12 +185,16 @@ object SshClients {
     /**
      * 打开一个会话
      */
-    fun openSession(host: Host, client: SshClient): ClientSession {
+    fun openSession(
+        host: Host,
+        client: SshClient,
+        progressListener: ConnectionProgressListener = ConnectionProgressListener {},
+    ): ClientSession {
         val h = hostManager.getHost(host.id) ?: host
 
         // 如果没有跳板机直接连接
         if (h.options.jumpHosts.isEmpty()) {
-            return doOpenSession(h, client)
+            return doOpenSession(h, client, progressListener = progressListener)
         }
 
         val jumpHosts = mutableListOf<Host>()
@@ -186,7 +216,7 @@ object SshClients {
         val sessions = mutableListOf<ClientSession>()
         for (i in 0 until jumpHosts.size) {
             val currentHost = jumpHosts[i]
-            sessions.add(doOpenSession(currentHost, client, i != 0))
+            sessions.add(doOpenSession(currentHost, client, i != 0, progressListener))
 
             // 如果有下一跳
             if (i < jumpHosts.size - 1) {
@@ -221,7 +251,12 @@ object SshClients {
     /**
      * @param middleware 如果为 true 表示是跳板
      */
-    private fun doOpenSession(host: Host, client: SshClient, middleware: Boolean = false): ClientSession {
+    private fun doOpenSession(
+        host: Host,
+        client: SshClient,
+        middleware: Boolean = false,
+        progressListener: ConnectionProgressListener = ConnectionProgressListener {},
+    ): ClientSession {
         val entry = HostConfigEntry()
         entry.port = host.port
         entry.username = host.username
@@ -251,12 +286,14 @@ object SshClients {
         }
 
         val timeout = Duration.ofSeconds(host.options.extras["timeout"]?.toLongOrNull() ?: 60)
-        val session = client.connect(entry).verify(timeout).session
-        if (host.authentication.type == AuthenticationType.Password) {
-            if (StringUtils.isNotBlank(host.authentication.password))
-                session.addPasswordIdentity(host.authentication.password)
-        } else if (host.authentication.type == AuthenticationType.PublicKey) {
-            session.keyIdentityProvider = OhKeyPairKeyPairProvider(host.authentication.password)
+        progressListener.onProgress(ConnectionProgress(ConnectionStage.Connecting, host))
+        val connectionListener = ConnectionSessionListener(host, progressListener)
+        client.addSessionListener(connectionListener)
+        val session = try {
+            client.connect(entry).verify(timeout).session
+        } catch (e: Exception) {
+            client.removeSessionListener(connectionListener)
+            throw e
         }
 
         if (host.options.enableX11Forwarding) {
@@ -271,7 +308,76 @@ object SshClients {
             }
         }
 
+        val kexState = try {
+            session.waitFor(
+                EnumSet.of(ClientSession.ClientSessionEvent.WAIT_AUTH, ClientSession.ClientSessionEvent.CLOSED),
+                timeout,
+            )
+        } finally {
+            client.removeSessionListener(connectionListener)
+            session.removeAttribute(KEX_CLIENT_PROPOSAL_REPORTER)
+        }
+        if (!kexState.contains(ClientSession.ClientSessionEvent.WAIT_AUTH)) {
+            if (!connectionListener.hasReportedClientProposal()) {
+                progressListener.onProgress(
+                    ConnectionProgress(
+                        ConnectionStage.ClientAlgorithmsOffered,
+                        host,
+                        session,
+                        session.clientKexProposals.toMap(),
+                    )
+                )
+            }
+            if (!connectionListener.hasReportedServerProposal()) {
+                progressListener.onProgress(
+                    ConnectionProgress(
+                        ConnectionStage.ServerAlgorithmsOffered,
+                        host,
+                        session,
+                        session.serverKexProposals.toMap(),
+                    )
+                )
+            }
+            if (!connectionListener.hasReportedFailure()) {
+                progressListener.onProgress(
+                    ConnectionProgress(
+                        ConnectionStage.KeyExchangeFailed,
+                        host,
+                        session,
+                        error = connectionListener.failureReason() ?: session.getAttribute(KEX_FAILURE),
+                    )
+                )
+            }
+            throw SshException(I18n.getString("termora.ssh.connection.kex-failed"))
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val algorithmExtras = client.properties[ALGORITHM_EXTRAS] as? Map<String, String> ?: host.options.extras
+        val warnings = SshAlgorithms.negotiatedWarnings(algorithmExtras, session.kexNegotiationResult)
+        if (warnings.isNotEmpty()) {
+            progressListener.onProgress(ConnectionProgress(ConnectionStage.AlgorithmWarning, host, session))
+            val owner = client.properties["owner"] as Window?
+            val confirmed = SshAlgorithmWarningDialog.confirm(
+                owner,
+                host.name,
+                "${host.host}:${host.port}",
+                warnings,
+            )
+            if (!confirmed) {
+                session.close(true)
+                throw SshException(I18n.getString("termora.ssh.warning.cancelled"))
+            }
+        }
+
+        if (host.authentication.type == AuthenticationType.Password) {
+            if (StringUtils.isNotBlank(host.authentication.password))
+                session.addPasswordIdentity(host.authentication.password)
+        } else if (host.authentication.type == AuthenticationType.PublicKey) {
+            session.keyIdentityProvider = OhKeyPairKeyPairProvider(host.authentication.password)
+        }
+
         try {
+            progressListener.onProgress(ConnectionProgress(ConnectionStage.Authenticating, host, session))
             if (!session.auth().verify(timeout).await(timeout)) {
                 throw SshException("Authentication failed")
             }
@@ -284,13 +390,153 @@ object SshClients {
                 host.copy(
                     authentication = askUserInfo.authentication,
                     username = askUserInfo.username
-                ), client
+                ), client, middleware, progressListener
             )
         }
 
         session.setAttribute(HOST_KEY, host)
+        progressListener.onProgress(ConnectionProgress(ConnectionStage.Authenticated, host, session))
 
         return session
+    }
+
+    private class ConnectionSessionListener(
+        private val host: Host,
+        private val progressListener: ConnectionProgressListener,
+    ) : SessionListener {
+        private val sessionRef = AtomicReference<ClientSession>()
+        private val transportReported = AtomicBoolean()
+        private val serverIdentificationReported = AtomicBoolean()
+        private val clientProposalReported = AtomicBoolean()
+        private val serverProposalReported = AtomicBoolean()
+        private val failureReported = AtomicBoolean()
+        private val failureReason = AtomicReference<Throwable>()
+        private val keyEstablished = AtomicBoolean()
+
+        fun hasReportedClientProposal(): Boolean = clientProposalReported.get()
+
+        fun hasReportedServerProposal(): Boolean = serverProposalReported.get()
+
+        fun hasReportedFailure(): Boolean = failureReported.get()
+
+        fun failureReason(): Throwable? = failureReason.get()
+
+        override fun sessionEstablished(session: Session) {
+            bindAndReportTransport(session)
+        }
+
+        override fun sessionCreated(session: Session) {
+            bindAndReportTransport(session)
+        }
+
+        override fun sessionPeerIdentificationReceived(
+            session: Session,
+            version: String,
+            extraLines: List<String>,
+        ) {
+            val clientSession = current(session) ?: return
+            if (serverIdentificationReported.compareAndSet(false, true)) {
+                progressListener.onProgress(
+                    ConnectionProgress(ConnectionStage.ServerIdentified, host, clientSession)
+                )
+            }
+        }
+
+        override fun sessionNegotiationStart(
+            session: Session,
+            clientProposal: Map<KexProposalOption, String>,
+            serverProposal: Map<KexProposalOption, String>,
+        ) {
+            val clientSession = current(session) ?: return
+            if (keyEstablished.get()) return
+
+            if (!serverProposalReported.compareAndSet(false, true)) return
+            progressListener.onProgress(
+                ConnectionProgress(
+                    ConnectionStage.ServerAlgorithmsOffered,
+                    host,
+                    clientSession,
+                    serverProposal.toMap(),
+                )
+            )
+        }
+
+        override fun sessionNegotiationEnd(
+            session: Session,
+            clientProposal: Map<KexProposalOption, String>,
+            serverProposal: Map<KexProposalOption, String>,
+            negotiatedOptions: Map<KexProposalOption, String>,
+            reason: Throwable?,
+        ) {
+            val clientSession = current(session) ?: return
+            if (keyEstablished.get()) return
+
+            if (reason == null) {
+                progressListener.onProgress(
+                    ConnectionProgress(
+                        ConnectionStage.AlgorithmsNegotiated,
+                        host,
+                        clientSession,
+                        negotiatedOptions.toMap(),
+                    )
+                )
+            } else {
+                reportFailure(clientSession, reason)
+            }
+        }
+
+        override fun sessionEvent(session: Session, event: SessionListener.Event) {
+            if (current(session) != null && event == SessionListener.Event.KeyEstablished) {
+                keyEstablished.set(true)
+            }
+        }
+
+        override fun sessionException(session: Session, t: Throwable) {
+            val clientSession = current(session) ?: return
+            if (!keyEstablished.get()) {
+                reportFailure(clientSession, t)
+            }
+        }
+
+        private fun bindAndReportTransport(session: Session) {
+            val clientSession = session as? ClientSession ?: return
+            if (!sessionRef.compareAndSet(null, clientSession) && sessionRef.get() !== clientSession) return
+            clientSession.setAttribute(KEX_CLIENT_PROPOSAL_REPORTER) { proposal ->
+                if (clientProposalReported.compareAndSet(false, true)) {
+                    progressListener.onProgress(
+                        ConnectionProgress(
+                            ConnectionStage.ClientAlgorithmsOffered,
+                            host,
+                            clientSession,
+                            proposal,
+                        )
+                    )
+                }
+            }
+            if (transportReported.compareAndSet(false, true)) {
+                progressListener.onProgress(
+                    ConnectionProgress(ConnectionStage.TransportConnected, host, clientSession)
+                )
+            }
+        }
+
+        private fun current(session: Session): ClientSession? {
+            return sessionRef.get()?.takeIf { it === session }
+        }
+
+        private fun reportFailure(session: ClientSession, reason: Throwable) {
+            if (!failureReported.compareAndSet(false, true)) return
+            failureReason.set(reason)
+            session.setAttribute(KEX_FAILURE, reason)
+            progressListener.onProgress(
+                ConnectionProgress(
+                    ConnectionStage.KeyExchangeFailed,
+                    host,
+                    session,
+                    error = reason,
+                )
+            )
+        }
     }
 
     fun openTunneling(session: ClientSession, host: Host, tunneling: Tunneling): SshdSocketAddress {
@@ -342,40 +588,29 @@ object SshClients {
      * 打开一个客户端
      */
     fun openClient(host: Host): SshClient {
+        if (SshAlgorithms.version(host.options.extras) == SshVersion.V1) {
+            throw SshException(I18n.getString("termora.new-host.ssh.version-v1-unsupported"))
+        }
+
         val builder = ClientBuilder.builder()
         builder.globalRequestHandlers(listOf(KeepAliveHandler.INSTANCE))
             .factory { MyJGitSshClient() }
 
-        val keyExchangeFactories = ClientBuilder.setUpDefaultKeyExchanges(true).toMutableList()
-
-        // https://github.com/TermoraDev/termora/issues/123
-        @Suppress("DEPRECATION")
-        keyExchangeFactories.addAll(
-            listOf(
-                DHGClient.newFactory(BuiltinDHFactories.dhg1),
-                DHGClient.newFactory(BuiltinDHFactories.dhg14),
-                DHGClient.newFactory(BuiltinDHFactories.dhgex),
-            )
-        )
-        builder.keyExchangeFactories(keyExchangeFactories)
-
-        val compressionFactories = ClientBuilder.setUpDefaultCompressionFactories(true).toMutableList()
-        for (compression in listOf(
-            BuiltinCompressions.none,
-            BuiltinCompressions.zlib,
-            BuiltinCompressions.delayedZlib
-        )) {
-            if (compressionFactories.contains(compression)) continue
-            compressionFactories.add(compression)
+        if (SshAlgorithms.isCustomized(host.options.extras)) {
+            for (category in SshAlgorithmCategory.entries) {
+                val policy = SshAlgorithms.policy(category, host.options.extras)
+                if (!SshAlgorithms.hasAvailableEnabledAlgorithms(category, policy)) {
+                    throw SshException(
+                        I18n.getString("termora.new-host.ssh.no-enabled-algorithms", category.name)
+                    )
+                }
+            }
+            builder.keyExchangeFactories(SshAlgorithms.keyExchangeFactories(host.options.extras))
+            builder.signatureFactories(SshAlgorithms.hostKeyFactories(host.options.extras))
+            builder.cipherFactories(SshAlgorithms.cipherFactories(host.options.extras))
+            builder.macFactories(SshAlgorithms.macFactories(host.options.extras))
+            builder.compressionFactories(SshAlgorithms.compressionFactories(host.options.extras))
         }
-        builder.compressionFactories(compressionFactories)
-
-        val signatureFactories = ClientBuilder.setUpDefaultSignatureFactories(true).toMutableList()
-        for (signature in BuiltinSignatures.entries) {
-            if (signatureFactories.contains(signature)) continue
-            signatureFactories.add(signature)
-        }
-        builder.signatureFactories(signatureFactories)
 
         if (host.tunnelings.isEmpty() && host.options.jumpHosts.isEmpty()) {
             builder.forwardingFilter(RejectAllForwardingFilter.INSTANCE)
@@ -391,7 +626,7 @@ object SshClients {
         builder.channelFactories(channelFactories)
 
         val sshClient = builder.build() as JGitSshClient
-
+        sshClient.properties[ALGORITHM_EXTRAS] = host.options.extras
         // https://github.com/TermoraDev/termora/issues/180
         // JGit 会尝试读取本地的私钥或缓存的私钥
         sshClient.keyIdentityProvider = KeyIdentityProvider { mutableListOf() }
@@ -428,7 +663,9 @@ object SshClients {
         val timeout = Duration.ofSeconds(host.options.extras["timeout"]?.toLongOrNull() ?: 60)
 
         CoreModuleProperties.HEARTBEAT_INTERVAL.set(sshClient, Duration.ofSeconds(heartbeatInterval.toLong()))
-        CoreModuleProperties.ALLOW_DHG1_KEX_FALLBACK.set(sshClient, true)
+        if (SshAlgorithms.allowsDhGroup1(host.options.extras)) {
+            CoreModuleProperties.ALLOW_DHG1_KEX_FALLBACK.set(sshClient, true)
+        }
         CoreModuleProperties.IO_CONNECT_TIMEOUT.set(sshClient, timeout)
 
         sshClient.setKeyPasswordProviderFactory { IdentityPasswordProvider(CredentialsProvider.getDefault()) }
@@ -599,6 +836,15 @@ object SshClients {
             return object : SessionFactory(sshClient) {
                 override fun doCreateSession(ioSession: IoSession): ClientSessionImpl {
                     return object : JGitClientSession(sshClient, ioSession) {
+                        override fun sendKexInit(proposal: MutableMap<KexProposalOption, String>): ByteArray {
+                            try {
+                                getAttribute(KEX_CLIENT_PROPOSAL_REPORTER)?.invoke(proposal.toMap())
+                            } catch (e: Exception) {
+                                log.warn("Failed to report client SSH KEX proposal", e)
+                            }
+                            return super.sendKexInit(proposal)
+                        }
+
                         override fun getClientProxyConnector(): ClientProxyConnector? {
                             val entry = getAttribute(HOST_CONFIG_ENTRY) ?: return null
                             val clientProxyConnectorId = entry.getProperty(CLIENT_PROXY_CONNECTOR) ?: return null

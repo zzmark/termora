@@ -356,6 +356,7 @@ class SettingsOptionsPane : OptionsPane() {
         val backgroundComBoBox = YesOrNoComboBox()
         val confirmTabCloseComBoBox = YesOrNoComboBox()
         val tabOrderComboBox = FlatComboBox<TabOrder>()
+        val debugComboBox = YesOrNoComboBox()
         val followSystemCheckBox = JCheckBox(I18n.getString("termora.settings.appearance.follow-system"))
         val preferredThemeBtn = JButton(Icons.settings)
         val opacitySpinner = NumberSpinner(100, 0, 100)
@@ -429,6 +430,8 @@ class SettingsOptionsPane : OptionsPane() {
             preferredThemeBtn.isEnabled = followSystemCheckBox.isSelected
             backgroundComBoBox.selectedItem = appearance.backgroundRunning
             confirmTabCloseComBoBox.selectedItem = appearance.confirmTabClose
+            debugComboBox.selectedItem = database.terminal.debug
+            debugComboBox.toolTipText = I18n.getString("termora.settings.debug.description")
 
             themeComboBox.isEnabled = !followSystemCheckBox.isSelected
             refreshThemes()
@@ -501,6 +504,15 @@ class SettingsOptionsPane : OptionsPane() {
             confirmTabCloseComBoBox.addItemListener {
                 if (it.stateChange == ItemEvent.SELECTED) {
                     appearance.confirmTabClose = confirmTabCloseComBoBox.selectedItem as Boolean
+                }
+            }
+
+            debugComboBox.addItemListener {
+                if (it.stateChange == ItemEvent.SELECTED) {
+                    database.terminal.debug = debugComboBox.selectedItem as Boolean
+                    TerminalFactory.getInstance().getTerminals().forEach { terminal ->
+                        terminal.getTerminalModel().setData(TerminalPanel.Debug, database.terminal.debug)
+                    }
                 }
             }
 
@@ -615,7 +627,7 @@ class SettingsOptionsPane : OptionsPane() {
         private fun getFormPanel(): JPanel {
             val layout = FormLayout(
                 "left:pref, $FORM_MARGIN, default:grow, $FORM_MARGIN, default, default:grow",
-                "pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref"
+                "pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref, $FORM_MARGIN, pref"
             )
             val box = FlatToolBar()
             box.add(followSystemCheckBox)
@@ -649,6 +661,9 @@ class SettingsOptionsPane : OptionsPane() {
             builder.add("${I18n.getString("termora.settings.appearance.tab-order")}:").xy(1, rows)
                 .add(tabOrderComboBox).xy(3, rows).apply { rows += step }
 
+            builder.add("${I18n.getString("termora.settings.debug")}:").xy(1, rows)
+                .add(debugComboBox).xy(3, rows).apply { rows += step }
+
             val confirmTabCloseBox = Box.createHorizontalBox()
             confirmTabCloseBox.add(JLabel("${I18n.getString("termora.settings.appearance.confirm-tab-close")}:"))
             confirmTabCloseBox.add(Box.createHorizontalStrut(8))
@@ -663,7 +678,6 @@ class SettingsOptionsPane : OptionsPane() {
 
     private inner class TerminalOption : JPanel(BorderLayout()), Option {
         private val cursorStyleComboBox = FlatComboBox<CursorStyle>()
-        private val debugComboBox = YesOrNoComboBox()
         private val beepComboBox = YesOrNoComboBox()
         private val cursorBlinkComboBox = YesOrNoComboBox()
         private val fontComboBox = FontComboBox()
@@ -741,16 +755,6 @@ class SettingsOptionsPane : OptionsPane() {
                     terminalSetting.cursor = style
                     TerminalFactory.getInstance().getTerminals().forEach { e ->
                         e.getTerminalModel().setData(DataKey.CursorStyle, style)
-                    }
-                }
-            }
-
-
-            debugComboBox.addItemListener { e ->
-                if (e.stateChange == ItemEvent.SELECTED) {
-                    terminalSetting.debug = debugComboBox.selectedItem as Boolean
-                    TerminalFactory.getInstance().getTerminals().forEach {
-                        it.getTerminalModel().setData(TerminalPanel.Debug, terminalSetting.debug)
                     }
                 }
             }
@@ -858,7 +862,6 @@ class SettingsOptionsPane : OptionsPane() {
 
             fontComboBox.selectedItem = terminalSetting.font
             fallbackFontComboBox.selectedItem = terminalSetting.fallbackFont
-            debugComboBox.selectedItem = terminalSetting.debug
             beepComboBox.selectedItem = terminalSetting.beep
             hyperlinkComboBox.selectedItem = terminalSetting.hyperlink
             cursorBlinkComboBox.selectedItem = terminalSetting.cursorBlink
@@ -916,8 +919,6 @@ class SettingsOptionsPane : OptionsPane() {
                 .add(fallbackFontComboBox).xy(3, rows).apply { rows += step }
                 .add("${I18n.getString("termora.settings.terminal.max-rows")}:").xy(1, rows)
                 .add(maxRowsTextField).xy(3, rows).apply { rows += step }
-                .add("${I18n.getString("termora.settings.terminal.debug")}:").xy(1, rows)
-                .add(debugComboBox).xy(3, rows).apply { rows += step }
                 .add("${I18n.getString("termora.settings.terminal.beep")}:").xy(1, rows)
                 .add(beepComboBox).xy(3, rows)
                 .add(beepBtn).xy(5, rows).apply { rows += step }

@@ -33,6 +33,7 @@ import javax.swing.table.DefaultTableModel
 internal class SSHHostOptionsPane(private val accountOwner: AccountOwner) : OptionsPane() {
     private val tunnelingOption = TunnelingOption()
     private val generalOption = GeneralOption()
+    private val sshAlgorithmsOption = SSHAlgorithmsOption()
     private val proxyOption = BasicProxyOption()
     private val terminalOption = BasicTerminalOption().apply {
         showCharsetComboBox = true
@@ -53,6 +54,7 @@ internal class SSHHostOptionsPane(private val accountOwner: AccountOwner) : Opti
 
     init {
         addOption(generalOption)
+        addOption(sshAlgorithmsOption)
         addOption(proxyOption)
         addOption(tunnelingOption)
         addOption(jumpHostsOption)
@@ -121,7 +123,7 @@ internal class SSHHostOptionsPane(private val accountOwner: AccountOwner) : Opti
                     ?: "-1"),
                 "timeout" to (terminalOption.timeoutTextField.value ?: 60).toString(),
                 "forwardAgent" to tunnelingOption.forwardAgentCheckBox.isSelected.toString(),
-            )
+            ).apply { putAll(sshAlgorithmsOption.getExtras()) }
         )
 
         return Host(
@@ -193,6 +195,7 @@ internal class SSHHostOptionsPane(private val accountOwner: AccountOwner) : Opti
         tunnelingOption.x11ForwardingCheckBox.isSelected = host.options.enableX11Forwarding
         tunnelingOption.x11ServerTextField.text = StringUtils.defaultIfBlank(host.options.x11Forwarding, "localhost:0")
         tunnelingOption.forwardAgentCheckBox.isSelected = host.options.extras["forwardAgent"]?.toBoolean() ?: false
+        sshAlgorithmsOption.setHost(host)
 
         if (host.options.jumpHosts.isNotEmpty()) {
             val hosts = HostManager.getInstance().hosts().associateBy { it.id }
@@ -207,6 +210,9 @@ internal class SSHHostOptionsPane(private val accountOwner: AccountOwner) : Opti
     }
 
     fun validateFields(): Boolean {
+        if (!sshAlgorithmsOption.validateConfiguration()) {
+            return false
+        }
         val host = getHost()
 
         // general
@@ -292,6 +298,277 @@ internal class SSHHostOptionsPane(private val accountOwner: AccountOwner) : Opti
             return true
         }
         return false
+    }
+
+
+    private inner class SSHAlgorithmsOption : JPanel(BorderLayout()), Option {
+        private val versionComboBox = FlatComboBox<SshVersion>()
+        private val customizedCheckBox = JCheckBox(I18n.getString("termora.new-host.ssh.customized"))
+        private val tabs = JTabbedPane()
+        private val algorithmLists = SshAlgorithmCategory.entries.associateWith { category ->
+            AlgorithmOrderPanel(SshAlgorithms.catalog(category))
+        }
+
+        init {
+            versionComboBox.addItem(SshVersion.Auto)
+            versionComboBox.addItem(SshVersion.V1)
+            versionComboBox.addItem(SshVersion.V2)
+            versionComboBox.renderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?,
+                    value: Any?,
+                    index: Int,
+                    isSelected: Boolean,
+                    cellHasFocus: Boolean,
+                ): Component {
+                    val key = when (value) {
+                        SshVersion.V1 -> "termora.new-host.ssh.version-v1"
+                        SshVersion.V2 -> "termora.new-host.ssh.version-v2"
+                        else -> "termora.new-host.ssh.version-auto"
+                    }
+                    return super.getListCellRendererComponent(
+                        list,
+                        I18n.getString(key),
+                        index,
+                        isSelected,
+                        cellHasFocus,
+                    )
+                }
+            }
+
+            customizedCheckBox.toolTipText = I18n.getString("termora.new-host.ssh.customized-description")
+            customizedCheckBox.addActionListener { updateCustomizedState() }
+
+            val versionPanel = FormBuilder.create()
+                .layout(FormLayout("left:pref, $FORM_MARGIN, default:grow", "pref, $FORM_MARGIN, pref"))
+                .add("${I18n.getString("termora.new-host.ssh.version")}:").xy(1, 1)
+                .add(versionComboBox).xy(3, 1)
+                .add(customizedCheckBox).xyw(1, 3, 3)
+                .build()
+
+            for (category in SshAlgorithmCategory.entries) {
+                tabs.addTab(categoryTitle(category), algorithmLists.getValue(category))
+            }
+
+            border = BorderFactory.createEmptyBorder(8, 0, 0, 0)
+            add(versionPanel, BorderLayout.NORTH)
+            add(tabs, BorderLayout.CENTER)
+            updateCustomizedState()
+        }
+
+        fun getExtras(): Map<String, String> {
+            val extras = mutableMapOf(
+                SshAlgorithms.VERSION_KEY to (versionComboBox.selectedItem as SshVersion).name,
+                SshAlgorithms.CUSTOMIZED_KEY to customizedCheckBox.isSelected.toString(),
+            )
+            for ((category, panel) in algorithmLists) {
+                extras[category.policyKey] = SshAlgorithms.encodePolicy(panel.getPolicy())
+            }
+            return extras
+        }
+
+        fun setHost(host: Host) {
+            versionComboBox.selectedItem = SshAlgorithms.version(host.options.extras)
+            for ((category, panel) in algorithmLists) {
+                panel.setPolicy(SshAlgorithms.policy(category, host.options.extras))
+            }
+            customizedCheckBox.isSelected = SshAlgorithms.isCustomized(host.options.extras)
+            updateCustomizedState()
+        }
+
+        fun validateConfiguration(): Boolean {
+            versionComboBox.putClientProperty(FlatClientProperties.OUTLINE, null)
+            if (versionComboBox.selectedItem == SshVersion.V1) {
+                selectOptionJComponent(versionComboBox)
+                versionComboBox.putClientProperty(FlatClientProperties.OUTLINE, FlatClientProperties.OUTLINE_ERROR)
+                versionComboBox.requestFocusInWindow()
+                JOptionPane.showMessageDialog(
+                    owner,
+                    I18n.getString("termora.new-host.ssh.version-v1-unsupported"),
+                    I18n.getString("termora.new-host.ssh"),
+                    JOptionPane.WARNING_MESSAGE,
+                )
+                return false
+            }
+
+            if (!customizedCheckBox.isSelected) return true
+            for ((category, panel) in algorithmLists) {
+                if (SshAlgorithms.hasAvailableEnabledAlgorithms(category, panel.getPolicy())) continue
+                selectOptionJComponent(panel)
+                tabs.selectedComponent = panel
+                JOptionPane.showMessageDialog(
+                    owner,
+                    I18n.getString("termora.new-host.ssh.no-enabled-algorithms", categoryTitle(category)),
+                    I18n.getString("termora.new-host.ssh"),
+                    JOptionPane.WARNING_MESSAGE,
+                )
+                return false
+            }
+            return true
+        }
+
+        private fun updateCustomizedState() {
+            algorithmLists.values.forEach { it.setCustomizationEnabled(customizedCheckBox.isSelected) }
+        }
+
+        private fun categoryTitle(category: SshAlgorithmCategory): String {
+            val key = when (category) {
+                SshAlgorithmCategory.KeyExchange -> "termora.new-host.ssh.key-exchange"
+                SshAlgorithmCategory.HostKey -> "termora.new-host.ssh.host-key"
+                SshAlgorithmCategory.Cipher -> "termora.new-host.ssh.cipher"
+                SshAlgorithmCategory.Mac -> "termora.new-host.ssh.mac"
+                SshAlgorithmCategory.Compression -> "termora.new-host.ssh.compression"
+            }
+            return I18n.getString(key)
+        }
+
+        override fun getIcon(isSelected: Boolean): Icon = Icons.locked
+
+        override fun getTitle(): String = I18n.getString("termora.new-host.ssh")
+
+        override fun getJComponent(): JComponent = this
+    }
+
+    private sealed interface AlgorithmListEntry {
+        data class Algorithm(val name: String) : AlgorithmListEntry
+        data object WarnMarker : AlgorithmListEntry
+        data object DisabledMarker : AlgorithmListEntry
+    }
+
+    private class AlgorithmOrderPanel(private val catalog: SshAlgorithmCatalog) : JPanel(BorderLayout()) {
+        private val model = DefaultListModel<AlgorithmListEntry>()
+        private val list = JList(model)
+        private val upButton = JButton(Icons.up)
+        private val downButton = JButton(Icons.down)
+        private val resetButton = JButton(Icons.revert)
+        private var customizationEnabled = false
+
+        init {
+            list.selectionMode = ListSelectionModel.SINGLE_SELECTION
+            list.fixedCellHeight = UIManager.getInt("List.rowHeight").takeIf { it > 0 }
+                ?: UIManager.getInt("Tree.rowHeight")
+            list.cellRenderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?,
+                    value: Any?,
+                    index: Int,
+                    isSelected: Boolean,
+                    cellHasFocus: Boolean,
+                ): Component {
+                    val text = when (value) {
+                        AlgorithmListEntry.WarnMarker -> "== warn below =="
+                        AlgorithmListEntry.DisabledMarker -> "== disabled below =="
+
+                        is AlgorithmListEntry.Algorithm -> algorithmText(value)
+                        else -> StringUtils.EMPTY
+                    }
+                    val component = super.getListCellRendererComponent(
+                        list,
+                        text,
+                        index,
+                        isSelected,
+                        cellHasFocus,
+                    )
+                    if (value is AlgorithmListEntry.Algorithm && value.name !in catalog.available && !isSelected) {
+                        foreground = UIManager.getColor("Label.disabledForeground")
+                    }
+                    if ((value === AlgorithmListEntry.WarnMarker || value === AlgorithmListEntry.DisabledMarker)
+                        && !isSelected
+                    ) {
+                        font = font.deriveFont(Font.BOLD)
+                    }
+                    return component
+                }
+            }
+            setPolicy(catalog.defaultPolicy())
+
+            upButton.toolTipText = I18n.getString("termora.new-host.ssh.move-up")
+            downButton.toolTipText = I18n.getString("termora.new-host.ssh.move-down")
+            resetButton.toolTipText = I18n.getString("termora.new-host.ssh.restore-defaults")
+            upButton.isFocusable = false
+            downButton.isFocusable = false
+            resetButton.isFocusable = false
+
+            list.addListSelectionListener { updateButtons() }
+            upButton.addActionListener { moveSelected(-1) }
+            downButton.addActionListener { moveSelected(1) }
+            resetButton.addActionListener { setPolicy(catalog.defaultPolicy()) }
+
+            val toolbar = JToolBar(JToolBar.VERTICAL)
+            toolbar.isFloatable = false
+            toolbar.add(upButton)
+            toolbar.add(downButton)
+            toolbar.addSeparator()
+            toolbar.add(resetButton)
+
+            border = BorderFactory.createEmptyBorder(8, 0, 0, 0)
+            add(JScrollPane(list), BorderLayout.CENTER)
+            add(toolbar, BorderLayout.EAST)
+        }
+
+        fun getPolicy(): SshAlgorithmPolicy {
+            val entries = (0 until model.size()).map(model::getElementAt)
+            val warnIndex = entries.indexOf(AlgorithmListEntry.WarnMarker)
+            val disabledIndex = entries.indexOf(AlgorithmListEntry.DisabledMarker)
+            return SshAlgorithmPolicy(
+                normal = entries.subList(0, warnIndex).filterIsInstance<AlgorithmListEntry.Algorithm>().map { it.name },
+                warn = entries.subList(warnIndex + 1, disabledIndex)
+                    .filterIsInstance<AlgorithmListEntry.Algorithm>().map { it.name },
+                disabled = entries.subList(disabledIndex + 1, entries.size)
+                    .filterIsInstance<AlgorithmListEntry.Algorithm>().map { it.name },
+            ).normalized(catalog.available)
+        }
+
+        fun setPolicy(policy: SshAlgorithmPolicy) {
+            val normalized = policy.normalized(catalog.available)
+            model.removeAllElements()
+            normalized.normal.map(AlgorithmListEntry::Algorithm).forEach(model::addElement)
+            model.addElement(AlgorithmListEntry.WarnMarker)
+            normalized.warn.map(AlgorithmListEntry::Algorithm).forEach(model::addElement)
+            model.addElement(AlgorithmListEntry.DisabledMarker)
+            normalized.disabled.map(AlgorithmListEntry::Algorithm).forEach(model::addElement)
+            list.clearSelection()
+            updateButtons()
+        }
+
+        fun setCustomizationEnabled(enabled: Boolean) {
+            customizationEnabled = enabled
+            list.isEnabled = enabled
+            resetButton.isEnabled = enabled
+            updateButtons()
+        }
+
+        private fun algorithmText(value: AlgorithmListEntry.Algorithm): String {
+            if (value.name !in catalog.available) {
+                return "${value.name} (${I18n.getString("termora.new-host.ssh.unavailable")})"
+            }
+            return value.name
+        }
+
+        private fun moveSelected(offset: Int) {
+            val source = list.selectedIndex
+            val target = source + offset
+            if (!canMove(source, target)) {
+                return
+            }
+            val value = model.remove(source)
+            model.add(target, value)
+            list.selectedIndex = target
+            list.ensureIndexIsVisible(target)
+        }
+
+        private fun canMove(source: Int, target: Int): Boolean {
+            if (!customizationEnabled || source < 0 || target !in 0 until model.size()) return false
+            val sourceValue = model.getElementAt(source)
+            val targetValue = model.getElementAt(target)
+            return !(sourceValue === AlgorithmListEntry.WarnMarker && targetValue === AlgorithmListEntry.DisabledMarker)
+                    && !(sourceValue === AlgorithmListEntry.DisabledMarker && targetValue === AlgorithmListEntry.WarnMarker)
+        }
+
+        private fun updateButtons() {
+            upButton.isEnabled = canMove(list.selectedIndex, list.selectedIndex - 1)
+            downButton.isEnabled = canMove(list.selectedIndex, list.selectedIndex + 1)
+        }
     }
 
     protected inner class GeneralOption : JPanel(BorderLayout()), Option {
