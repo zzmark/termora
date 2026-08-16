@@ -3,6 +3,7 @@ package app.termora.plugin
 import app.termora.Application
 import app.termora.ApplicationScope
 import app.termora.FramePlugin
+import app.termora.StartupProbe
 import app.termora.account.AccountPlugin
 import app.termora.plugin.internal.badge.BadgePlugin
 import app.termora.plugin.internal.extension.DynamicExtensionPlugin
@@ -49,12 +50,14 @@ internal class PluginManager private constructor() {
     private val pluginIds = mutableSetOf<String>()
 
     init {
+        StartupProbe.mark(StartupProbe.PLUGIN_INITIALIZE_STARTED)
         // load internal plugins
         loadInternalPlugins()
         // load system plugins
         loadSystemPlugins()
         // load user plugins
         loadPlugins(getPluginDirectory(), PluginOrigin.External)
+        StartupProbe.mark(StartupProbe.PLUGIN_INITIALIZE_COMPLETE)
     }
 
     /**

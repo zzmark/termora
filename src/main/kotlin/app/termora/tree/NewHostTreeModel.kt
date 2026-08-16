@@ -39,6 +39,9 @@ class NewHostTreeModel private constructor() : SimpleTreeModel<Host>(
     init {
         reload()
         registerDynamicExtensions()
+        if (StartupProbe.mark(StartupProbe.HOST_MODEL_READY)) {
+            StartupUiProbe.onContentReadinessChanged()
+        }
     }
 
     override fun getRoot(): HostTreeNode {

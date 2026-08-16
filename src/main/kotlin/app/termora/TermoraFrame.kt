@@ -55,6 +55,9 @@ class TermoraFrame : JFrame(), DataProvider {
         initView()
         initEvents()
         initKeymap()
+        if (StartupProbe.mark(StartupProbe.KEYMAP_READY)) {
+            StartupUiProbe.onContentReadinessChanged()
+        }
     }
 
     private fun initEvents() {
@@ -325,6 +328,13 @@ class TermoraFrame : JFrame(), DataProvider {
     override fun addNotify() {
         super.addNotify()
         notifyListeners.forEach { it.addNotify() }
+    }
+
+    override fun paint(g: Graphics) {
+        super.paint(g)
+        if (StartupProbe.isEnabled) {
+            StartupUiProbe.onFramePainted(this)
+        }
     }
 
     private fun computedTitleBarHeight(): Int {

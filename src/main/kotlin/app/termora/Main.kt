@@ -1,6 +1,10 @@
 package app.termora
 
 fun main() {
-    ApplicationInitializr().run()
+    StartupProbe.mark(StartupProbe.MAIN_ENTER)
+    try {
+        ApplicationInitializr().run()
+    } finally {
+        StartupProbe.mark(StartupProbe.MAIN_RETURN)
+    }
 }
-
