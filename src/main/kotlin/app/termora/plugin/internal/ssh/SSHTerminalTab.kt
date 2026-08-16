@@ -18,13 +18,47 @@ import org.apache.sshd.client.channel.ChannelShell
 import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.common.future.CloseFuture
 import org.apache.sshd.common.future.SshFutureListener
+import org.apache.sshd.common.kex.KexProposalOption
 import org.slf4j.LoggerFactory
 import java.awt.event.KeyEvent
 import java.nio.charset.StandardCharsets
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.SwingUtilities
-import kotlin.time.Duration.Companion.milliseconds
+
+internal fun sshServerIdentificationMessage(serverVersion: String?): String {
+    return if (serverVersion.isNullOrBlank()) {
+        I18n.getString("termora.ssh.connection.server-identified")
+    } else {
+        I18n.getString("termora.ssh.connection.server-version", serverVersion)
+    }
+}
+
+internal fun sshAuthenticationMethodName(type: AuthenticationType): String = when (type) {
+    AuthenticationType.No -> "none"
+    AuthenticationType.Password -> "password"
+    AuthenticationType.PublicKey -> "publickey"
+    AuthenticationType.SSHAgent -> "publickey (ssh-agent)"
+    AuthenticationType.KeyboardInteractive -> "keyboard-interactive"
+}
+
+internal fun sshFailureReason(error: Throwable): String {
+    val rootCause = generateSequence(error) { it.cause }.last()
+    return "${rootCause.javaClass.simpleName}: ${rootCause.message ?: rootCause.toString()}"
+}
+
+internal fun sshDirectionalAlgorithmDetails(label: String, c2s: String?, s2c: String?): List<String> {
+    val clientToServer = c2s.orEmpty()
+    val serverToClient = s2c.orEmpty()
+    return if (clientToServer == serverToClient) {
+        listOf("$label: $clientToServer")
+    } else {
+        listOf(
+            "$label (C2S): $clientToServer",
+            "$label (S2C): $serverToClient",
+        )
+    }
+}
 
 class SSHTerminalTab(
     windowScope: WindowScope, host: Host,
@@ -40,6 +74,7 @@ class SSHTerminalTab(
     private val mutex = Mutex()
     private val owner get() = SwingUtilities.getWindowAncestor(terminalPanel)
     private val tab get() = this
+    private val debug get() = DatabaseManager.getInstance().terminal.debug
 
     init {
         terminalPanel.dropFiles = false
@@ -78,37 +113,28 @@ class SSHTerminalTab(
             terminal.clearScreen()
             // hide cursor
             terminalModel.setData(DataKey.Companion.ShowCursor, false)
-            // print
-            terminal.write("Connecting to remote server ")
-        }
-
-        val loading = coroutineScope.launch(Dispatchers.Swing) {
-            val braille = "⡿⣟⣯⣷⣾⣽⣻⢿".reversed().toCharArray()
-//            val braille = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".toCharArray()
-            var c = 0
-            while (isActive) {
-                if (++c >= braille.size) c = 0
-                terminal.write("${braille[c]}")
-                delay(100.milliseconds)
-                terminal.write("${ControlCharacters.BS}")
-            }
+            terminal.write("${I18n.getString("termora.ssh.connection.connecting")}\r\n")
         }
 
         val channel: ChannelShell
-        try {
-            val client = openClient()
-            val session = openSession(client)
-            channel = openChannel(session)
-            // 打开隧道
-            openTunnelings(session, host)
-        } finally {
-            loading.cancel()
+        writeConnectionStatus(I18n.getString("termora.ssh.connection.preparing-client"))
+        val client = openClient()
+        val session = openSession(client)
+        writeConnectionStatus(I18n.getString("termora.ssh.connection.opening-channel"))
+        channel = openChannel(session)
+        // 打开隧道
+        if (host.tunnelings.isNotEmpty()) {
+            writeConnectionStatus(I18n.getString("termora.ssh.connection.opening-forwarding"))
         }
+        openTunnelings(session, host)
 
         // 隐藏提示
         withContext(Dispatchers.Swing) {
-            // clear screen
-            terminal.clearScreen()
+            if (debug) {
+                terminal.write("[SSH] ${I18n.getString("termora.ssh.connection.connected")}\r\n\r\n")
+            } else {
+                terminal.clearScreen()
+            }
             // show cursor
             terminalModel.setData(DataKey.ShowCursor, true)
 
@@ -168,7 +194,127 @@ class SSHTerminalTab(
     private fun openSession(client: SshClient): ClientSession {
         val session = handler.session
         if (session != null) return SshSessionPool.register(session, client)
-        return SshClients.openSession(host, client).also { handler.session = SshSessionPool.register(it, client) }
+        return SshClients.openSession(host, client, ::onConnectionProgress)
+            .also { handler.session = SshSessionPool.register(it, client) }
+    }
+
+    private fun onConnectionProgress(progress: SshClients.ConnectionProgress) {
+        val currentHost = progress.host
+        when (progress.stage) {
+            SshClients.ConnectionStage.Connecting -> writeConnectionStatus(
+                I18n.getString(
+                    "termora.ssh.connection.connecting-address",
+                    currentHost.name,
+                    currentHost.host,
+                    currentHost.port,
+                )
+            )
+
+            SshClients.ConnectionStage.TransportConnected -> writeConnectionStatus(
+                I18n.getString("termora.ssh.connection.transport-connected")
+            )
+
+            SshClients.ConnectionStage.ServerIdentified -> {
+                val session = progress.session ?: return
+                writeConnectionStatus(sshServerIdentificationMessage(session.serverVersion))
+            }
+
+            SshClients.ConnectionStage.ClientAlgorithmsOffered -> writeAlgorithmGroup(
+                "termora.ssh.connection.client-offered-algorithms",
+                progress.algorithms,
+            )
+
+            SshClients.ConnectionStage.ServerAlgorithmsOffered -> writeAlgorithmGroup(
+                "termora.ssh.connection.server-offered-algorithms",
+                progress.algorithms,
+            )
+
+            SshClients.ConnectionStage.AlgorithmsNegotiated -> writeAlgorithmGroup(
+                "termora.ssh.connection.negotiated-algorithms",
+                progress.algorithms,
+            )
+
+            SshClients.ConnectionStage.KeyExchangeFailed -> {
+                writeConnectionStatus(I18n.getString("termora.ssh.connection.kex-failed"))
+                val reason = progress.error?.let(::sshFailureReason)
+                    ?: I18n.getString("termora.ssh.connection.kex-failed")
+                writeConnectionStatus(
+                    I18n.getString("termora.ssh.connection.kex-failure-reason", reason),
+                )
+                if (log.isWarnEnabled) {
+                    log.warn("SSH connection [{}] key exchange failed: {}", host.name, reason, progress.error)
+                }
+            }
+
+            SshClients.ConnectionStage.AlgorithmWarning -> writeConnectionStatus(
+                I18n.getString("termora.ssh.connection.algorithm-warning")
+            )
+
+            SshClients.ConnectionStage.Authenticating -> {
+                writeConnectionStatus(
+                    I18n.getString(
+                        "termora.ssh.connection.authentication-method",
+                        sshAuthenticationMethodName(currentHost.authentication.type),
+                    ),
+                    debugOnly = true,
+                )
+                writeConnectionStatus(
+                    I18n.getString("termora.ssh.connection.authenticating", currentHost.username)
+                )
+            }
+
+            SshClients.ConnectionStage.Authenticated -> writeConnectionStatus(
+                I18n.getString("termora.ssh.connection.authenticated")
+            )
+        }
+    }
+
+    private fun writeAlgorithmGroup(titleKey: String, algorithms: Map<KexProposalOption, String>?) {
+        writeConnectionStatus(
+            I18n.getString(titleKey),
+            debugOnly = true,
+        )
+        writeAlgorithmDetails(algorithms.orEmpty())
+    }
+
+    private fun writeAlgorithmDetails(algorithms: Map<KexProposalOption, String>) {
+        val details = mutableListOf(
+            "${I18n.getString("termora.new-host.ssh.key-exchange")}: ${algorithms[KexProposalOption.ALGORITHMS].orEmpty()}",
+            "${I18n.getString("termora.new-host.ssh.host-key")}: ${algorithms[KexProposalOption.SERVERKEYS].orEmpty()}",
+        )
+        details += sshDirectionalAlgorithmDetails(
+            I18n.getString("termora.new-host.ssh.cipher"),
+            algorithms[KexProposalOption.C2SENC],
+            algorithms[KexProposalOption.S2CENC],
+        )
+        details += sshDirectionalAlgorithmDetails(
+            I18n.getString("termora.new-host.ssh.mac"),
+            algorithms[KexProposalOption.C2SMAC],
+            algorithms[KexProposalOption.S2CMAC],
+        )
+        details += sshDirectionalAlgorithmDetails(
+            I18n.getString("termora.new-host.ssh.compression"),
+            algorithms[KexProposalOption.C2SCOMP],
+            algorithms[KexProposalOption.S2CCOMP],
+        )
+        details.forEach { writeConnectionStatus(it, debugOnly = true) }
+    }
+
+    private fun writeConnectionStatus(message: String, debugOnly: Boolean = false) {
+        if (debugOnly && !debug) {
+            return
+        }
+
+        val write = { terminal.write("[SSH] $message\r\n") }
+        if (SwingUtilities.isEventDispatchThread()) {
+            write()
+        } else {
+            SwingUtilities.invokeAndWait(write)
+        }
+
+        if (debug && log.isInfoEnabled) {
+            log.info("SSH connection [{}]: {}", host.name, message)
+        }
     }
 
     private fun openChannel(session: ClientSession): ChannelShell {
