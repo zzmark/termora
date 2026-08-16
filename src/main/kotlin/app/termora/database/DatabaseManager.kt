@@ -57,6 +57,7 @@ class DatabaseManager private constructor() : Disposable {
     private val accountManager get() = AccountManager.getInstance()
 
     init {
+        StartupProbe.mark(StartupProbe.DATABASE_INITIALIZE_STARTED)
 
         val databaseFile = FileUtils.getFile(
             Application.getBaseDataDir(),
@@ -98,6 +99,7 @@ class DatabaseManager private constructor() : Disposable {
 
         // 注册动态扩展
         registerDynamicExtensions()
+        StartupProbe.mark(StartupProbe.DATABASE_INITIALIZE_COMPLETE)
 
     }
 

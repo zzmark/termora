@@ -33,41 +33,57 @@ class ApplicationRunner {
     private val log by lazy { LoggerFactory.getLogger(ApplicationRunner::class.java) }
 
     fun run() {
+        StartupProbe.mark(StartupProbe.APPLICATION_RUNNER_ENTER)
 
         // 异步初始化
-        val loadPluginThread = Thread.ofVirtual().start { PluginManager.getInstance() }
+        val loadPluginThread = Thread.ofVirtual().start {
+            StartupProbe.mark(StartupProbe.PLUGIN_LOAD_STARTED)
+            PluginManager.getInstance()
+            StartupProbe.mark(StartupProbe.PLUGIN_LOAD_COMPLETE)
+        }
 
         // 打印系统信息
         printSystemInfo()
 
         // 解锁对话框外观：临时默认主题（不读 DB），setupLaf() 之后会被用户主题覆盖
         com.formdev.flatlaf.FlatLightLaf.setup()
+        StartupProbe.mark(StartupProbe.TEMPORARY_LAF_READY)
 
         // 打开数据库
+        StartupProbe.mark(StartupProbe.DATABASE_LOAD_STARTED)
         openDatabase()
+        StartupProbe.mark(StartupProbe.DATABASE_READY)
 
         // 加载设置
         loadSettings()
+        StartupProbe.mark(StartupProbe.SETTINGS_READY)
 
         // 统计
         enableAnalytics()
 
         // 设置 LAF
         setupLaf()
+        StartupProbe.mark(StartupProbe.FINAL_LAF_READY)
 
         // clear temporary
         clearTemporary()
 
         // 等待插件加载完成
         loadPluginThread.join()
+        StartupProbe.mark(StartupProbe.PLUGIN_BARRIER_COMPLETE)
 
         // 准备就绪
         for (extension in ExtensionManager.getInstance().getExtensions(ApplicationRunnerExtension::class.java)) {
             extension.ready()
         }
+        StartupProbe.mark(StartupProbe.EXTENSIONS_READY)
 
         // 启动主窗口
-        SwingUtilities.invokeLater { startMainFrame() }
+        StartupProbe.mark(StartupProbe.FRAME_TASK_QUEUED)
+        SwingUtilities.invokeLater {
+            StartupProbe.mark(StartupProbe.FRAME_EDT_ENTER)
+            startMainFrame()
+        }
 
     }
 
@@ -81,8 +97,11 @@ class ApplicationRunner {
 
     private fun startMainFrame() {
 
-
-        TermoraFrameManager.getInstance().createWindow().isVisible = true
+        StartupProbe.mark(StartupProbe.FRAME_CONSTRUCTION_STARTED)
+        val frame = TermoraFrameManager.getInstance().createWindow()
+        StartupProbe.mark(StartupProbe.FRAME_CONSTRUCTED)
+        frame.isVisible = true
+        StartupProbe.mark(StartupProbe.FRAME_VISIBLE)
 
         if (SystemInfo.isMacOS) {
             SwingUtilities.invokeLater {

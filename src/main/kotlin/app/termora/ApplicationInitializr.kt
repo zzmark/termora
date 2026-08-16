@@ -18,6 +18,7 @@ import kotlin.system.measureTimeMillis
 class ApplicationInitializr {
 
     fun run() {
+        StartupProbe.mark(StartupProbe.INITIALIZER_ENTER)
 
         // 提供一个选项，用于延迟启动，它通常是远程调试时使用
         val delay = System.getProperty("app-delay")
@@ -30,15 +31,23 @@ class ApplicationInitializr {
 
         // 依赖二进制依赖会单独在一个文件夹
         setupNativeLibraries()
+        StartupProbe.mark(StartupProbe.NATIVE_LIBRARIES_READY)
 
         // 设置 tinylog
         setupTinylog()
+        StartupProbe.mark(StartupProbe.LOGGING_READY)
 
         // AOT cache 必须在应用初始化之前选择 record/create/normal 模式
-        AotCacheManager.prepare()
+        if (StartupProbe.shouldSkipAot) {
+            StartupProbe.mark(StartupProbe.AOT_SKIPPED)
+        } else {
+            AotCacheManager.prepare()
+            StartupProbe.mark(StartupProbe.AOT_PREPARED)
+        }
 
         // 检查是否单例
         checkSingleton()
+        StartupProbe.mark(StartupProbe.SINGLETON_READY)
 
         if (SystemInfo.isMacOS) {
             System.setProperty("apple.awt.application.name", Application.getName())

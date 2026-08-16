@@ -245,6 +245,11 @@ tasks.test {
 tasks.register<Copy>("copy-dependencies") {
     val dir = layout.buildDirectory.dir("libs")
     from(configurations.runtimeClasspath).into(dir)
+    if (os.isWindows) {
+        from(layout.projectDirectory.file("src/main/resources/icons/termora_256x256.png")) {
+            rename { "termora-splash.png" }
+        }
+    }
     val jna = libs.jna.asProvider().get()
     val pty4j = libs.pty4j.get()
     val flatlaf = libs.flatlaf.get()
@@ -455,6 +460,7 @@ tasks.register<Exec>("jpackage") {
 
     if (os.isWindows) {
         options.add("--enable-native-access=ALL-UNNAMED")
+        options.add("-splash:${'$'}APPDIR/termora-splash.png")
     }
 
     val arguments = mutableListOf("${Jvm.current().javaHome}/bin/jpackage")
