@@ -697,6 +697,10 @@ class DatabaseManager private constructor() : Disposable {
          * 是否显示悬浮工具栏
          */
         var floatingToolbar by BooleanPropertyDelegate(true)
+
+        var hiddenSystemStatusModules by StringPropertyDelegate(StringUtils.EMPTY)
+
+        var systemStatusBar by BooleanPropertyDelegate(true)
     }
 
     /**

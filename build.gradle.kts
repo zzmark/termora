@@ -241,9 +241,14 @@ tasks.test {
     useJUnitPlatform()
 }
 
+tasks.jar {
+    destinationDirectory.set(layout.buildDirectory.dir("main-jar"))
+}
+
 @Suppress("CascadeIf")
 tasks.register<Copy>("copy-dependencies") {
     val dir = layout.buildDirectory.dir("libs")
+    from(tasks.jar)
     from(configurations.runtimeClasspath).into(dir)
     if (os.isWindows) {
         from(layout.projectDirectory.file("src/main/resources/icons/termora_256x256.png")) {

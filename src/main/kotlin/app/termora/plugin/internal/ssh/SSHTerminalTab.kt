@@ -5,6 +5,8 @@ import app.termora.actions.DataProviders
 import app.termora.actions.TabReconnectAction
 import app.termora.addons.zmodem.ZModemPtyConnectorAdaptor
 import app.termora.database.DatabaseManager
+import app.termora.database.DatabasePropertiesChangedExtension
+import app.termora.plugin.internal.extension.DynamicExtensionHandler
 import app.termora.keymap.KeyShortcut
 import app.termora.keymap.KeymapManager
 import app.termora.plugin.internal.telnet.TelnetHostOptionsPane
@@ -20,6 +22,7 @@ import org.apache.sshd.common.future.CloseFuture
 import org.apache.sshd.common.future.SshFutureListener
 import org.apache.sshd.common.kex.KexProposalOption
 import org.slf4j.LoggerFactory
+import java.awt.BorderLayout
 import java.awt.event.KeyEvent
 import java.nio.charset.StandardCharsets
 import javax.swing.Icon
@@ -75,10 +78,29 @@ class SSHTerminalTab(
     private val owner get() = SwingUtilities.getWindowAncestor(terminalPanel)
     private val tab get() = this
     private val debug get() = DatabaseManager.getInstance().terminal.debug
+    internal val systemMonitor = SshSystemMonitor()
 
     init {
         terminalPanel.dropFiles = false
         terminalPanel.dataProviderSupport.addData(DataProviders.TerminalTab, this)
+        val statusBar = SshSystemStatusBar(host, systemMonitor)
+        statusBar.isVisible = DatabaseManager.getInstance().terminal.systemStatusBar
+        systemMonitor.setEnabled(statusBar.isVisible)
+        terminalPanel.add(statusBar, BorderLayout.SOUTH)
+        Disposer.register(this, systemMonitor)
+        Disposer.register(this, statusBar)
+        val settingsListener = object : DatabasePropertiesChangedExtension {
+            override fun onPropertyChanged(name: String, key: String, value: String) {
+                if (name != "Setting.Terminal" || key != "systemStatusBar") return
+                statusBar.isVisible = value.toBoolean()
+                systemMonitor.setEnabled(statusBar.isVisible)
+                terminalPanel.revalidate()
+                terminalPanel.repaint()
+            }
+        }
+        Disposer.register(this, DynamicExtensionHandler.getInstance().register(
+            DatabasePropertiesChangedExtension::class.java, settingsListener,
+        ))
     }
 
     override fun getJComponent(): JComponent {
@@ -147,6 +169,8 @@ class SSHTerminalTab(
                     encoder.putCode(TerminalKeyEvent(keyCode = KeyEvent.VK_BACK_SPACE), "${ControlCharacters.ESC}[3~")
                 }
             }
+
+            systemMonitor.start(session)
 
         }
 
@@ -372,6 +396,7 @@ class SSHTerminalTab(
     }
 
     override fun stop() {
+        systemMonitor.stop()
         if (mutex.tryLock()) {
             try {
                 super.stop()

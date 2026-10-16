@@ -3,8 +3,9 @@
 # Invoke-WebRequest -Uri "http://stahlworks.com/dev/zip.exe" -OutFile "$system32\zip.exe"
 # Invoke-WebRequest -Uri "http://stahlworks.com/dev/unzip.exe" -OutFile "$system32\unzip.exe"
 
+.\gradlew clean
 .\gradlew :check-license
 .\gradlew classes -x test
-.\gradlew :jar :copy-dependencies :plugins:migration:build :jlink
+.\gradlew :jar :copy-dependencies :plugins:sync:build :plugins:vnc:build :jlink
 .\gradlew :jpackage
 .\gradlew :dist
