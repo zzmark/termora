@@ -1,7 +1,10 @@
 package app.termora
 
+import app.termora.actions.DataProviders
 import app.termora.database.DatabaseManager
 import app.termora.plugin.ExtensionManager
+import app.termora.tlog.LogViewerTerminalTab
+import app.termora.transfer.TransportTerminalTab
 import com.formdev.flatlaf.ui.FlatNativeWindowsLibrary
 import com.formdev.flatlaf.util.SystemInfo
 import com.sun.jna.Pointer
@@ -35,6 +38,15 @@ class TermoraFrameManager : Disposable {
         fun getInstance(): TermoraFrameManager {
             return ApplicationScope.forApplicationScope()
                 .getOrCreate(TermoraFrameManager::class) { TermoraFrameManager() }
+        }
+
+        internal fun hasOpenConnectionTabs(tabs: Iterable<TerminalTab>): Boolean = tabs.any {
+            when (it) {
+                is LogViewerTerminalTab -> false
+                is HostTerminalTab -> true
+                is TransportTerminalTab -> it.hasOpenConnectionTabs()
+                else -> false
+            }
         }
     }
 
@@ -141,6 +153,16 @@ class TermoraFrameManager : Disposable {
 
                 // 如果 macOS 已经开启了后台运行，那么直接销毁，因为会有一个进程驻守
                 if (SystemInfo.isMacOS && isBackgroundRunning) {
+                    window.dispose()
+                    return
+                }
+
+                val tabs = ApplicationScope.forWindowScope(window)
+                    .get(TerminalTabbedManager::class).getTerminalTabs()
+                val detachedTabs = Window.getWindows().filterIsInstance<TerminalTabDialog>()
+                    .filter { it.isDisplayable }
+                    .mapNotNull { it.getData(DataProviders.TerminalTab) }
+                if (!hasOpenConnectionTabs(tabs + detachedTabs)) {
                     window.dispose()
                     return
                 }

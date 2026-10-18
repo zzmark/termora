@@ -2,6 +2,7 @@ package app.termora.transfer
 
 import app.termora.*
 import app.termora.database.DatabaseManager
+import app.termora.plugin.internal.local.LocalProtocolProvider
 import app.termora.terminal.DataKey
 import app.termora.transfer.TransportPanel.Companion.isLocallyFileSystem
 import java.beans.PropertyChangeListener
@@ -61,6 +62,16 @@ internal class TransportTerminalTab : RememberFocusTerminalTab() {
         }
 
         return true
+    }
+
+    fun hasOpenConnectionTabs(): Boolean = listOf(leftTabbed, rightTabbed).any { tabbed ->
+        (0 until tabbed.tabCount).any { index ->
+            when (val panel = tabbed.getComponentAt(index)) {
+                is TransportPanel -> panel.host.protocol != LocalProtocolProvider.PROTOCOL
+                is TransportSelectionPanel -> panel.hasOpenConnectionTab()
+                else -> false
+            }
+        }
     }
 
     private fun hasActiveTab(tabbed: TransportTabbed): Boolean {

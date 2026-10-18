@@ -2,6 +2,7 @@ package app.termora.transfer
 
 import app.termora.*
 import app.termora.database.DatabaseManager
+import app.termora.plugin.internal.local.LocalProtocolProvider
 import app.termora.protocol.TransferProtocolProvider
 import app.termora.tree.*
 import com.formdev.flatlaf.icons.FlatOptionPaneErrorIcon
@@ -72,6 +73,9 @@ internal class TransportSelectionPanel(
     private fun initEvents() {
         Disposer.register(this, selectHostPanel)
     }
+
+    fun hasOpenConnectionTab(): Boolean = state != State.Initialized &&
+        host?.let { it.protocol != LocalProtocolProvider.PROTOCOL } == true
 
     fun connect(host: Host) {
         if (state == State.Connecting) return
