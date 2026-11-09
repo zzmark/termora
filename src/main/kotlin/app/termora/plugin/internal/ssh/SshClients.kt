@@ -73,6 +73,7 @@ import java.nio.file.Paths
 import java.security.PublicKey
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -236,6 +237,41 @@ object SshClients {
         }
 
         return sessions.last()
+    }
+
+    internal fun openJumpHostForwarding(
+        jumpHosts: List<Host>,
+        target: SshdSocketAddress,
+        owner: Window,
+        isCancelled: () -> Boolean,
+    ): Pair<SshdSocketAddress, AutoCloseable> {
+        require(jumpHosts.isNotEmpty())
+        val clients = mutableListOf<SshClient>()
+        val cleanup = AutoCloseable {
+            clients.asReversed().forEach { client -> runCatching { client.close(true) } }
+        }
+        try {
+            var endpoint: SshdSocketAddress? = null
+            jumpHosts.forEachIndexed { index, host ->
+                if (isCancelled()) throw CancellationException()
+                val client = openClient(host, owner, enableForwarding = true)
+                clients.add(client)
+                client.serverKeyVerifier = DialogServerKeyVerifier(owner, SshdSocketAddress(host.host, host.port))
+                val dialHost = endpoint?.let { host.copy(host = it.hostName, port = it.port) } ?: host
+                val session = doOpenSession(dialHost, client, middleware = index != 0)
+                if (isCancelled()) throw CancellationException()
+                val next = jumpHosts.getOrNull(index + 1)
+                val destination = next?.let { SshdSocketAddress(it.host, it.port) } ?: target
+                endpoint = session.startLocalPortForwarding(
+                    SshdSocketAddress("127.0.0.1", 0),
+                    destination,
+                )
+            }
+            return checkNotNull(endpoint) to cleanup
+        } catch (e: Exception) {
+            cleanup.close()
+            throw e
+        }
     }
 
     fun isMiddleware(session: ClientSession): Boolean {
@@ -575,9 +611,9 @@ object SshClients {
         return sshdSocketAddress
     }
 
-    fun openClient(host: Host, owner: Window): SshClient {
+    fun openClient(host: Host, owner: Window, enableForwarding: Boolean = false): SshClient {
         val h = hostManager.getHost(host.id) ?: host
-        val client = openClient(h)
+        val client = openClient(h, enableForwarding)
         client.userInteraction = TerminalUserInteraction(owner)
         client.serverKeyVerifier = DialogServerKeyVerifier(owner)
         client.properties["owner"] = owner
@@ -587,7 +623,7 @@ object SshClients {
     /**
      * 打开一个客户端
      */
-    fun openClient(host: Host): SshClient {
+    fun openClient(host: Host, enableForwarding: Boolean = false): SshClient {
         if (SshAlgorithms.version(host.options.extras) == SshVersion.V1) {
             throw SshException(I18n.getString("termora.new-host.ssh.version-v1-unsupported"))
         }
@@ -612,7 +648,7 @@ object SshClients {
             builder.compressionFactories(SshAlgorithms.compressionFactories(host.options.extras))
         }
 
-        if (host.tunnelings.isEmpty() && host.options.jumpHosts.isEmpty()) {
+        if (!enableForwarding && host.tunnelings.isEmpty() && host.options.jumpHosts.isEmpty()) {
             builder.forwardingFilter(RejectAllForwardingFilter.INSTANCE)
         } else {
             builder.forwardingFilter(AcceptAllForwardingFilter.INSTANCE)
@@ -789,12 +825,30 @@ object SshClients {
 
     private class DialogServerKeyVerifier(
         owner: Window,
+        private val originalAddress: SshdSocketAddress? = null,
     ) : KnownHostsServerKeyVerifier(
         MyDialogServerKeyVerifier(owner),
         Paths.get(Application.getBaseDataDir().absolutePath, "known_hosts")
     ) {
         init {
             modifiedServerKeyAcceptor = delegateVerifier as ModifiedServerKeyAcceptor
+        }
+
+        override fun resolveHostNetworkIdentities(
+            clientSession: ClientSession?,
+            remoteAddress: SocketAddress?,
+        ): Collection<SshdSocketAddress> =
+            originalAddress?.let(::listOf) ?: super.resolveHostNetworkIdentities(clientSession, remoteAddress)
+
+        override fun acceptModifiedServerKey(
+            clientSession: ClientSession?,
+            remoteAddress: SocketAddress?,
+            entry: KnownHostEntry?,
+            expected: PublicKey?,
+            actual: PublicKey?,
+        ): Boolean {
+            val address = originalAddress?.let { InetSocketAddress.createUnresolved(it.hostName, it.port) }
+            return super.acceptModifiedServerKey(clientSession, address ?: remoteAddress, entry, expected, actual)
         }
 
         override fun updateKnownHostsFile(
@@ -804,7 +858,7 @@ object SshClients {
             file: Path?,
             knownHosts: Collection<HostEntryPair?>?
         ): KnownHostEntry? {
-            if (clientSession is JGitClientSession) {
+            if (originalAddress == null && clientSession is JGitClientSession) {
                 if (isMiddleware(clientSession)) {
                     return null
                 }

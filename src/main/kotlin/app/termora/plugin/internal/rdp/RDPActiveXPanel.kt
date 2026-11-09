@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory
 import java.awt.BorderLayout
 import java.awt.Canvas
 import java.awt.Color
+import java.awt.Window
 import java.io.BufferedWriter
 import java.io.File
 import java.io.OutputStreamWriter
@@ -23,6 +24,7 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.SwingConstants
@@ -37,7 +39,7 @@ import javax.swing.Timer
  * positioned over this panel, which preserves mstsc's native focus and keyboard
  * handling without a cross-process SetParent relationship.
  */
-internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()), Disposable {
+internal class RDPActiveXPanel(private val host: Host, private val owner: Window) : JPanel(BorderLayout()), Disposable {
     companion object {
         private val log = LoggerFactory.getLogger(RDPActiveXPanel::class.java)
         private val helperLock = Any()
@@ -70,6 +72,7 @@ internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()),
 
     private var overlayState: OverlayState? = null
     private var overlayOwner: Long = 0
+    private val routeOpener = AtomicReference<Thread?>()
 
     private val overlayTimer = Timer(15) {
         syncOverlayWindow()
@@ -88,7 +91,18 @@ internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()),
         Thread({
             var launchedProcess: Process? = null
             var launchedWriter: BufferedWriter? = null
+            var connection: RDPConnection? = null
             try {
+                routeOpener.set(Thread.currentThread())
+                try {
+                    if (closeRequested.get() || disposed.get()) return@Thread
+                    connection = RDPConnection.open(host, owner, { closeRequested.get() || disposed.get() }) { e ->
+                        showFailure(FailureKind.CONNECTION, e.localizedMessage ?: e.javaClass.simpleName)
+                    }
+                } finally {
+                    routeOpener.set(null)
+                }
+                if (closeRequested.get() || disposed.get()) return@Thread
                 val helper = extractHelper()
                 val helperProcess = ProcessBuilder(helper.absolutePath)
                     .redirectErrorStream(true)
@@ -100,12 +114,12 @@ internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()),
                 launchedWriter = helperWriter
                 val settings = RDPSettings.fromExtras(host.options.extras)
 
-                writeConfig(helperWriter, host.host)
+                writeConfig(helperWriter, connection.address)
                 writeConfig(helperWriter, host.username)
                 val password = host.authentication.password
                 writeConfig(helperWriter, password)
                 writeConfig(helperWriter, host.name)
-                writeConfig(helperWriter, host.port.toString())
+                writeConfig(helperWriter, connection.port.toString())
                 writeConfig(helperWriter, canvas.width.coerceAtLeast(1024).toString())
                 writeConfig(helperWriter, canvas.height.coerceAtLeast(768).toString())
                 writeConfig(helperWriter, (settings.resolution?.width ?: 0).toString())
@@ -120,6 +134,7 @@ internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()),
                 writeConfig(helperWriter, settings.redirectDrives.toString())
                 writeConfig(helperWriter, settings.redirectSmartCards.toString())
                 writeConfig(helperWriter, settings.bitmapCache.toString())
+                writeConfig(helperWriter, if (connection.isForwarded) host.host else "")
                 helperWriter.flush()
                 log.info("RDP ActiveX configuration sent. passwordProvided={}", password.isNotEmpty())
 
@@ -185,14 +200,17 @@ internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()),
                     )
                 }
             } catch (e: Throwable) {
-                log.error("Failed to start the embedded RDP client", e)
-                requestClose("launcher failure")
-                showFailure(FailureKind.STARTUP, e.message ?: e.javaClass.simpleName)
+                if (!disposed.get() && !closeRequested.get()) {
+                    log.error("Failed to start the embedded RDP client", e)
+                    requestClose("launcher failure")
+                    showFailure(FailureKind.STARTUP, e.message ?: e.javaClass.simpleName)
+                }
                 launchedProcess?.takeIf { it.isAlive }?.let { helperProcess ->
                     runCatching { launchedWriter?.close() }
                     stopProcessAsync(helperProcess, launchedWriter)
                 }
             } finally {
+                connection?.close()
                 launchedProcess?.takeUnless { it.isAlive }?.let { helperProcess ->
                     releaseProcessHandles(helperProcess, launchedWriter)
                 }
@@ -315,6 +333,7 @@ internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()),
 
     private fun requestClose(reason: String) {
         if (!closeRequested.compareAndSet(false, true)) return
+        routeOpener.get()?.interrupt()
         val helperProcess = process
         log.info(
             "RDP ActiveX close requested. reason={}, pid={}",
@@ -322,6 +341,7 @@ internal class RDPActiveXPanel(private val host: Host) : JPanel(BorderLayout()),
             helperProcess?.pid()?.toString() ?: "pending",
         )
         writer?.let { sendCommand(it, "CLOSE") }
+        if (helperProcess != null) stopProcessAsync(helperProcess, writer)
     }
 
     private fun stopProcessAsync(helperProcess: Process, helperWriter: BufferedWriter?) {

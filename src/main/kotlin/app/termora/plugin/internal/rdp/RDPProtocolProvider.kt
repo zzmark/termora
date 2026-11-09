@@ -5,16 +5,22 @@ import app.termora.actions.DataProvider
 import app.termora.protocol.GenericProtocolProvider
 import com.formdev.flatlaf.util.SystemInfo
 import com.sun.jna.platform.win32.Crypt32Util
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.future.await
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.apache.commons.io.FileUtils
 import org.apache.commons.lang3.StringUtils
+import org.apache.commons.text.StringEscapeUtils
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.net.URI
 import java.util.HexFormat
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JOptionPane
+import javax.swing.SwingUtilities
 import kotlin.time.Duration.Companion.seconds
 
 internal class RDPProtocolProvider private constructor() : GenericProtocolProvider {
@@ -39,30 +45,52 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
         if (SystemInfo.isWindows) {
             val settings = RDPSettings.fromExtras(host.options.extras)
             if (settings.connectionMethod == RDPConnectionMethod.MSTSCAX) return true
-            try {
-                openMstsc(host, settings)
-            } catch (e: Exception) {
-                OptionPane.showMessageDialog(
-                    windowScope.window,
-                    e.localizedMessage,
-                    title = I18n.getString("termora.rdp.error.startup"),
-                    messageType = JOptionPane.ERROR_MESSAGE
-                )
-            }
+            launchMstsc(windowScope, host, settings)
         } else {
             openRDP(windowScope, host)
         }
         return false
     }
 
-    private fun openMstsc(host: Host, settings: RDPSettings) {
+    private fun launchMstsc(windowScope: WindowScope, host: Host, settings: RDPSettings) {
+        swingCoroutineScope.launch(Dispatchers.IO) {
+            val failureShown = AtomicBoolean()
+            fun reportFailure(e: Exception) {
+                if (!failureShown.compareAndSet(false, true)) return
+                SwingUtilities.invokeLater {
+                    OptionPane.showMessageDialog(
+                        windowScope.window,
+                        StringEscapeUtils.escapeHtml4(e.localizedMessage ?: e.javaClass.simpleName),
+                        title = I18n.getString("termora.rdp.error.startup"),
+                        messageType = JOptionPane.ERROR_MESSAGE
+                    )
+                }
+            }
+            try {
+                RDPConnection.open(host, windowScope.window, { !isActive }, ::reportFailure).use { connection ->
+                    openMstsc(host, settings, connection)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                reportFailure(e)
+            }
+        }
+    }
+
+    private suspend fun openMstsc(host: Host, settings: RDPSettings, connection: RDPConnection) {
         require(listOf(host.host, host.username).none { '\r' in it || '\n' in it || '\u0000' in it }) {
             I18n.getString("termora.new-host.rdp.invalid-address")
         }
-        val address = if (':' in host.host) "[${host.host.removeSurrounding("[", "]")}]" else host.host
+        val address = connection.address.let { if (':' in it) "[${it.removeSurrounding("[", "]")}]" else it }
         val configuration = buildString {
-            appendLine("full address:s:$address:${host.port}")
+            appendLine("full address:s:$address:${connection.port}")
             appendLine("username:s:${host.username}")
+            if (connection.isForwarded) {
+                appendLine("authentication level:i:2")
+                appendLine("gatewayprofileusagemethod:i:1")
+                appendLine("gatewayusagemethod:i:0")
+            }
             settings.appendMstscProperties(this)
             if (host.authentication.type == AuthenticationType.Password && host.authentication.password.isNotEmpty()) {
                 val password = host.authentication.password.toByteArray(Charsets.UTF_16LE)
@@ -80,7 +108,11 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
         try {
             file.writeText("\uFEFF" + configuration.replace("\n", "\r\n"), Charsets.UTF_16LE)
             val mstsc = FileUtils.getFile(System.getenv("WINDIR") ?: "C:\\Windows", "System32", "mstsc.exe")
-            ProcessBuilder(mstsc.absolutePath, file.absolutePath).start()
+            val process = ProcessBuilder(mstsc.absolutePath, file.absolutePath).start()
+            if (connection.isForwarded) {
+                process.onExit().await()
+                FileUtils.deleteQuietly(file)
+            }
         } catch (e: Exception) {
             FileUtils.deleteQuietly(file)
             throw e

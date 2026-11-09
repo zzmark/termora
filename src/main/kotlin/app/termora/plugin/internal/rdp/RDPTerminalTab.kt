@@ -8,7 +8,7 @@ import javax.swing.Icon
 import javax.swing.JComponent
 
 internal class RDPTerminalTab(windowScope: WindowScope, host: Host) : HostTerminalTab(windowScope, host) {
-    private val panel = RDPActiveXPanel(host)
+    private val panel = RDPActiveXPanel(host, windowScope.window)
 
     override fun getJComponent(): JComponent {
         return panel

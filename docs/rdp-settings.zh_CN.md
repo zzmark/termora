@@ -1,6 +1,6 @@
 # Windows RDP 主机设置
 
-在 Windows 上编辑或新建 RDP 主机时，从左侧切换「属性」「RDP」和「代理」。配置按主机保存，下次连接时应用。
+在 Windows 上编辑或新建 RDP 主机时，从左侧切换「属性」「RDP」「代理」和「跳板机」。配置按主机保存，下次连接时应用。
 
 - 在「属性」中选择连接方式。「内嵌（mstscax）」在 Termora 标签页打开，也是已有主机的默认方式。「外部（mstsc.exe）」打开 Windows 自带的远程桌面连接窗口。
 - 在「RDP」中将分辨率设为「固定」，输入宽高，例如 `1920 × 1080`。每个维度支持 200 至 8192 像素。旧主机保存过有效宽高的，会在这里显示为固定分辨率。
@@ -14,3 +14,11 @@
 内嵌 ActiveX 的显示设置没有每连接刷新率或帧率选项。Windows Server 管理员可以在远程会话主机上通过 `DWMFRAMEINTERVAL` 调整帧率上限。实际帧率取决于应用、硬件和网络。[Microsoft 的远程会话帧率说明](https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/frame-rate-limited-to-30-fps)
 
 [Microsoft 的 RDP 显示和重定向属性](https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties)
+
+## 代理和 SSH 跳板机
+
+内嵌和外部连接均可使用「代理」页的 HTTP、SOCKS5，或「跳板机」页中的一台或多台已保存的 SSH 主机。同一条 RDP 主机只能选其中一种路线。跳板机按列表顺序连接，最后一台需允许 TCP 转发并能访问 RDP 主机。如果入口 SSH 主机需要代理，在那台 SSH 主机的设置里填写。
+
+HTTP 代理需允许向目标端口建立 `CONNECT` 隧道，可用无认证或 Basic 用户名密码。SOCKS5 支持无认证和用户名密码。代理或跳板失败时，连接会中止。
+
+转发监听本机回环地址，只转发 TCP。Windows 可能因为连接地址与证书名称不同而显示服务器身份提示。核对证书对应的是配置里的目标主机后，再自行决定是否继续。使用 IP 连接且需要指定远程 Windows 本地账号时，可填写 `电脑名\用户名`。通过外部 `mstsc.exe` 使用转发时，保持 Termora 运行。

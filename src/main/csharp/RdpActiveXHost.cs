@@ -29,6 +29,7 @@ sealed class RdpConfiguration
     public bool RedirectDrives;
     public bool RedirectSmartCards;
     public bool BitmapCache;
+    public string OriginalServer;
 
     public static RdpConfiguration ReadFromStandardInput()
     {
@@ -52,7 +53,8 @@ sealed class RdpConfiguration
             RedirectPrinters = Boolean.Parse(ReadValue()),
             RedirectDrives = Boolean.Parse(ReadValue()),
             RedirectSmartCards = Boolean.Parse(ReadValue()),
-            BitmapCache = Boolean.Parse(ReadValue())
+            BitmapCache = Boolean.Parse(ReadValue()),
+            OriginalServer = ReadValue()
         };
     }
 
@@ -700,7 +702,8 @@ static class RdpIdentityConfigurator
     public static void Configure(
         dynamic client,
         string server,
-        string configuredUserName
+        string configuredUserName,
+        bool allowNetBiosLookup
     )
     {
         var separator = configuredUserName.IndexOf('\\');
@@ -724,7 +727,7 @@ static class RdpIdentityConfigurator
             return;
         }
 
-        var targetComputerName = ResolveTargetComputerName(server);
+        var targetComputerName = ResolveTargetComputerName(server, allowNetBiosLookup);
         client.Domain = targetComputerName;
         client.UserName = configuredUserName;
         RdpActiveXHost.WriteLine(
@@ -735,7 +738,7 @@ static class RdpIdentityConfigurator
         );
     }
 
-    static string ResolveTargetComputerName(string server)
+    static string ResolveTargetComputerName(string server, bool allowNetBiosLookup)
     {
         var normalizedServer = server.Trim().Trim('[', ']');
         IPAddress address;
@@ -750,7 +753,7 @@ static class RdpIdentityConfigurator
                 : String.Empty;
         }
 
-        if (address.AddressFamily !=
+        if (!allowNetBiosLookup || address.AddressFamily !=
             System.Net.Sockets.AddressFamily.InterNetwork)
         {
             return String.Empty;
@@ -1021,17 +1024,24 @@ sealed class RdpSessionForm : Form
         host.LogonError = HandleLogonError;
         host.EnsureEventSink();
 
+        var forwarded = !String.IsNullOrEmpty(configuration.OriginalServer);
         client.Server = configuration.Server;
         RdpIdentityConfigurator.Configure(
             client,
-            configuration.Server,
-            configuration.UserName
+            forwarded ? configuration.OriginalServer : configuration.Server,
+            configuration.UserName,
+            !forwarded
         );
         client.ColorDepth = configuration.ColorDepth;
         client.ConnectingText = "Connecting to " + configuration.Name + "...";
 
         var advancedSettings = client.AdvancedSettings2;
         advancedSettings.RDPPort = configuration.Port;
+        if (forwarded)
+        {
+            advancedSettings.AuthenticationLevel = 2U;
+            client.TransportSettings.GatewayUsageMethod = 0U;
+        }
         advancedSettings.SmartSizing = configuration.SmartSizing;
         advancedSettings.RedirectClipboard = configuration.RedirectClipboard;
         advancedSettings.RedirectPrinters = configuration.RedirectPrinters;

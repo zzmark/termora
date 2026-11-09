@@ -3,6 +3,8 @@ package app.termora.plugin.internal.rdp
 import app.termora.*
 import app.termora.account.AccountOwner
 import app.termora.plugin.internal.BasicProxyOption
+import app.termora.plugin.internal.JumpHostsOption
+import app.termora.plugin.internal.ssh.SSHProtocolProvider
 import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.components.FlatComboBox
 import com.formdev.flatlaf.ui.FlatTextBorder
@@ -22,12 +24,17 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
     protected val generalOption = GeneralOption()
     protected val proxyOption = BasicProxyOption()
     private val rdpOption = if (SystemInfo.isWindows) RDPDisplayOption() else null
+    private val jumpHostsOption = if (SystemInfo.isWindows) JumpHostsOption().apply {
+        filter = { it.protocol.equals(SSHProtocolProvider.PROTOCOL, ignoreCase = true) }
+    } else null
+    private var savedJumpHosts = emptyList<String>()
     protected val owner: Window get() = SwingUtilities.getWindowAncestor(this)
 
     init {
         addOption(generalOption)
         rdpOption?.let(::addOption)
         addOption(proxyOption)
+        jumpHostsOption?.let(::addOption)
 
     }
 
@@ -73,7 +80,10 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
             proxy = proxy,
             sort = System.currentTimeMillis(),
             remark = generalOption.remarkTextArea.text,
-            options = Options.Default.copy(extras = rdpExtras)
+            options = Options.Default.copy(
+                extras = rdpExtras,
+                jumpHosts = jumpHostsOption?.jumpHosts?.map { it.id } ?: savedJumpHosts,
+            )
         )
     }
 
@@ -88,6 +98,15 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
             generalOption.passwordTextField.text = host.authentication.password
         }
         val desktop = host.options.extras[RDPSettings.DESKTOP].orEmpty()
+        savedJumpHosts = host.options.jumpHosts
+        if (jumpHostsOption != null && savedJumpHosts.isNotEmpty()) {
+            val hosts = HostManager.getInstance().hosts().associateBy { it.id }
+            jumpHostsOption.setHosts(savedJumpHosts.map { id ->
+                hosts[id] ?: Host(id = id, name = id, protocol = SSHProtocolProvider.PROTOCOL)
+            })
+        } else {
+            jumpHostsOption?.setHosts(emptyList())
+        }
         if (rdpOption != null) {
             val settings = RDPSettings.fromExtras(host.options.extras)
             generalOption.connectionMethodComboBox.selectedIndex = settings.connectionMethod.ordinal
@@ -108,6 +127,12 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
 
     fun validateFields(): Boolean {
         val host = getHost()
+        if (jumpHostsOption != null && host.proxy.type != ProxyType.No && host.options.jumpHosts.isNotEmpty()) {
+            selectOption(jumpHostsOption)
+            OptionPane.showMessageDialog(owner, I18n.getString("termora.rdp.error.proxy-conflict"),
+                messageType = JOptionPane.WARNING_MESSAGE)
+            return false
+        }
 
         // general
         if (validateField(generalOption.nameTextField)
