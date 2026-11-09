@@ -6,7 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileNotFoundException
-import java.nio.file.Files
 import javax.swing.Icon
 
 class LogViewerTerminalTab(
@@ -32,7 +31,7 @@ class LogViewerTerminalTab(
         }
 
         val input = withContext(Dispatchers.IO) {
-            Files.newBufferedReader(file.toPath())
+            TerminalLogFiles.open(file)
         }
 
         return object : PtyConnector {

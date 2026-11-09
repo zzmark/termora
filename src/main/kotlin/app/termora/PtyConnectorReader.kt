@@ -2,6 +2,7 @@ package app.termora
 
 import app.termora.terminal.PtyConnector
 import app.termora.terminal.Terminal
+import app.termora.tlog.TerminalLoggerDataListener
 import kotlinx.coroutines.delay
 import org.slf4j.LoggerFactory
 import javax.swing.SwingUtilities
@@ -26,7 +27,10 @@ class PtyConnectorReader(
                 continue
             }
             val text = String(buffer, 0, i)
-            SwingUtilities.invokeLater { terminal.write(text) }
+            SwingUtilities.invokeLater {
+                TerminalLoggerDataListener.forTerminal(terminal)?.onOutput(text)
+                terminal.write(text)
+            }
         }
 
         if (log.isDebugEnabled) {

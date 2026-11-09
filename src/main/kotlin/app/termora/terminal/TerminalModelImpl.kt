@@ -104,9 +104,11 @@ open class TerminalModelImpl(private val terminal: Terminal) : TerminalModel {
         Toolkit.getDefaultToolkit().beep()
     }
 
+    protected open fun isValidSize(rows: Int, cols: Int): Boolean = rows >= 5 && cols >= 10
+
     override fun resize(rows: Int, cols: Int) {
 
-        if (rows < 5 || cols < 10) {
+        if (!isValidSize(rows, cols)) {
             return
         }
 

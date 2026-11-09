@@ -35,7 +35,12 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 
-class TerminalPanel(val tab: TerminalTab?, val terminal: Terminal, private val writer: TerminalWriter) :
+class TerminalPanel @JvmOverloads constructor(
+    val tab: TerminalTab?,
+    val terminal: Terminal,
+    private val writer: TerminalWriter,
+    private val fitTerminalToPanel: Boolean = true,
+) :
     JPanel(BorderLayout()), DataProvider, Disposable, VisualWindowManager {
 
     companion object {
@@ -177,7 +182,9 @@ class TerminalPanel(val tab: TerminalTab?, val terminal: Terminal, private val w
                 repaintImmediate()
             }
         })
-        this.addComponentListener(TerminalPanelComponentAdapter(this, terminalDisplay, terminal, writer))
+        if (fitTerminalToPanel) {
+            this.addComponentListener(TerminalPanelComponentAdapter(this, terminalDisplay, terminal, writer))
+        }
 
         // 选中相关
         val mouseAdapter = TerminalPanelMouseSelectionAdapter(this, terminal)
@@ -348,7 +355,7 @@ class TerminalPanel(val tab: TerminalTab?, val terminal: Terminal, private val w
         // 输入法提交
         if (committedCharacterCount > 0) {
             writer.write(
-                TerminalWriter.WriteRequest.fromBytes(
+                TerminalWriter.WriteRequest.fromKeyboard(
                     sb.toString().toByteArray(writer.getCharset())
                 )
             )

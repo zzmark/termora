@@ -38,8 +38,14 @@ class TerminalPanelFactory : Disposable {
     }
 
 
-    fun createTerminalPanel(tab: TerminalTab?, terminal: Terminal, ptyConnector: PtyConnector): TerminalPanel {
-        val writer = MyTerminalWriter(ptyConnector)
+    @JvmOverloads
+    fun createTerminalPanel(
+        tab: TerminalTab?,
+        terminal: Terminal,
+        ptyConnector: PtyConnector,
+        onKeyboardInput: ((ByteArray, Charset) -> Unit)? = null,
+    ): TerminalPanel {
+        val writer = MyTerminalWriter(ptyConnector, onKeyboardInput)
         val terminalPanel = TerminalPanel(tab, terminal, writer)
 
         // processDeviceStatusReport
@@ -110,7 +116,10 @@ class TerminalPanelFactory : Disposable {
         }
     }
 
-    private class MyTerminalWriter(private val ptyConnector: PtyConnector) : TerminalWriter {
+    private class MyTerminalWriter(
+        private val ptyConnector: PtyConnector,
+        private val onKeyboardInput: ((ByteArray, Charset) -> Unit)?,
+    ) : TerminalWriter {
         companion object {
             private val log = LoggerFactory.getLogger(MyTerminalWriter::class.java)
         }
@@ -129,29 +138,34 @@ class TerminalPanelFactory : Disposable {
 
             val windowScope = evt.getData(DataProviders.WindowScope)
             if (windowScope == null) {
-                ptyConnector.write(request.buffer)
+                send(request)
                 return
             }
 
             val multipleAction = MultipleAction.getInstance()
             if (multipleAction.isSelected(windowScope).not()) {
-                ptyConnector.write(request.buffer)
+                send(request)
                 return
             }
 
             val terminalTabbedManager = evt.getData(DataProviders.TerminalTabbedManager)
             if (terminalTabbedManager == null) {
-                ptyConnector.write(request.buffer)
+                send(request)
                 return
             }
 
             for (tab in terminalTabbedManager.getTerminalTabs()) {
                 val writer = tab.getData(DataProviders.TerminalWriter) ?: continue
                 if (writer is MyTerminalWriter) {
-                    writer.ptyConnector.write(request.buffer)
+                    writer.send(request)
                 }
             }
 
+        }
+
+        private fun send(request: TerminalWriter.WriteRequest) {
+            ptyConnector.write(request.buffer)
+            if (request.keyboardInput) onKeyboardInput?.invoke(request.buffer, getCharset())
         }
 
         override fun resize(rows: Int, cols: Int) {

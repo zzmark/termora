@@ -35,7 +35,7 @@ class TerminalPanelKeyAdapter(
         }
 
         terminal.getSelectionModel().clearSelection()
-        writer.write(TerminalWriter.WriteRequest.fromBytes("${e.keyChar}".toByteArray(writer.getCharset())))
+        writer.write(TerminalWriter.WriteRequest.fromKeyboard("${e.keyChar}".toByteArray(writer.getCharset())))
         terminal.getScrollingModel().scrollTo(Int.MAX_VALUE)
 
     }
@@ -82,7 +82,7 @@ class TerminalPanelKeyAdapter(
 
         val encode = terminal.getKeyEncoder().encode(AWTTerminalKeyEvent(e))
         if (encode.isNotEmpty()) {
-            writer.write(TerminalWriter.WriteRequest.fromBytes(encode.toByteArray(writer.getCharset())))
+            writer.write(TerminalWriter.WriteRequest.fromKeyboard(encode.toByteArray(writer.getCharset())))
             // scroll to bottom
             terminal.getScrollingModel().scrollTo(Int.MAX_VALUE)
             e.consume()
@@ -98,7 +98,7 @@ class TerminalPanelKeyAdapter(
         // https://github.com/TermoraDev/termora/issues/331
         if (isAltPressedOnly(e) && Character.isDefined(e.keyChar) && modifier == AltKeyModifier.CharactersPrecededByESC) {
             val c = String(charArrayOf(ASCII_ESC, simpleMapKeyCodeToChar(e)))
-            writer.write(TerminalWriter.WriteRequest.fromBytes(c.toByteArray(writer.getCharset())))
+            writer.write(TerminalWriter.WriteRequest.fromKeyboard(c.toByteArray(writer.getCharset())))
             // scroll to bottom
             terminal.getScrollingModel().scrollTo(Int.MAX_VALUE)
             e.consume()
@@ -117,7 +117,7 @@ class TerminalPanelKeyAdapter(
             terminal.getSelectionModel().clearSelection()
             // 如果不为空表示已经发送过了，所以这里为空的时候再发送
             if (encode.isEmpty()) {
-                writer.write(TerminalWriter.WriteRequest.fromBytes("$keyChar".toByteArray(writer.getCharset())))
+                writer.write(TerminalWriter.WriteRequest.fromKeyboard("$keyChar".toByteArray(writer.getCharset())))
                 e.consume()
             }
             terminal.getScrollingModel().scrollTo(Int.MAX_VALUE)

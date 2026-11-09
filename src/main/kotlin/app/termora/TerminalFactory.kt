@@ -23,7 +23,9 @@ class TerminalFactory private constructor() : Disposable {
         val terminal = MyVisualTerminal()
 
         // terminal logger listener
-        terminal.getTerminalModel().addDataListener(TerminalLoggerDataListener(terminal))
+        val logger = TerminalLoggerDataListener(terminal)
+        terminal.getTerminalModel().setData(TerminalLoggerDataListener.Recorder, logger)
+        terminal.getTerminalModel().addDataListener(logger)
         terminal.addTerminalListener(object : TerminalListener {
             override fun onClose(terminal: Terminal) {
                 terminals.remove(terminal)

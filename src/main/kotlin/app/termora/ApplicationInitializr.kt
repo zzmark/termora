@@ -1,6 +1,7 @@
 package app.termora
 
 import app.termora.aot.AotCacheManager
+import app.termora.tlog.TerminalLogFiles
 import com.formdev.flatlaf.FlatSystemProperties
 import com.formdev.flatlaf.util.SystemInfo
 import com.pty4j.util.PtyUtil
@@ -48,6 +49,7 @@ class ApplicationInitializr {
         // 检查是否单例
         checkSingleton()
         StartupProbe.mark(StartupProbe.SINGLETON_READY)
+        TerminalLogFiles.startRecovery()
 
         if (SystemInfo.isMacOS) {
             System.setProperty("apple.awt.application.name", Application.getName())

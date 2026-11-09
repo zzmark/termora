@@ -26,9 +26,13 @@ interface TerminalWriter {
      */
     fun getCharset(): Charset = Charsets.UTF_8
 
-    class WriteRequest private constructor(val buffer: ByteArray) {
+    class WriteRequest private constructor(val buffer: ByteArray, val keyboardInput: Boolean = false) {
 
         companion object {
+            fun fromKeyboard(bytes: ByteArray): WriteRequest {
+                return WriteRequest(bytes, keyboardInput = true)
+            }
+
             fun fromBytes(bytes: ByteArray): WriteRequest {
                 return WriteRequest(bytes)
             }

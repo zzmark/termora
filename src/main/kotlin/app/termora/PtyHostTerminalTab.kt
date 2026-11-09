@@ -3,12 +3,14 @@ package app.termora
 import app.termora.actions.DataProviders
 import app.termora.plugin.internal.AltKeyModifier
 import app.termora.terminal.*
+import app.termora.tlog.TerminalLoggerDataListener
 import kotlinx.coroutines.*
 import kotlinx.coroutines.swing.Swing
 import org.apache.commons.lang3.exception.ExceptionUtils
 import org.slf4j.LoggerFactory
 import java.awt.event.KeyEvent
 import javax.swing.JComponent
+import javax.swing.SwingUtilities
 import kotlin.time.Duration.Companion.milliseconds
 
 abstract class PtyHostTerminalTab(
@@ -27,7 +29,11 @@ abstract class PtyHostTerminalTab(
     protected val terminalPanel = TerminalPanelFactory.getInstance().createTerminalPanel(
         this,
         terminal, ptyConnectorDelegate
-    )
+    ) { bytes, charset ->
+        if (ptyConnectorDelegate.ptyConnector != null) {
+            TerminalLoggerDataListener.forTerminal(terminal)?.onKeyboardInput(bytes, charset)
+        }
+    }
     protected val ptyConnectorFactory get() = PtyConnectorFactory.getInstance()
 
     override fun start() {
@@ -36,6 +42,7 @@ abstract class PtyHostTerminalTab(
             try {
 
                 withContext(Dispatchers.Swing) {
+                    TerminalLoggerDataListener.forTerminal(terminal)?.startSession()
                     // clear terminal
                     terminal.clearScreen()
                 }
@@ -82,6 +89,7 @@ abstract class PtyHostTerminalTab(
                     terminal.write("\r\n${ControlCharacters.ESC}[31m")
                     terminal.write(ExceptionUtils.getRootCauseMessage(e))
                     terminal.write("${ControlCharacters.ESC}[0m")
+                    TerminalLoggerDataListener.forTerminal(terminal)?.endSession()
                 }
             }
 
@@ -194,11 +202,19 @@ abstract class PtyHostTerminalTab(
 
     open fun startPtyConnectorReader() {
         readerJob?.cancel()
-        readerJob = coroutineScope.launch(Dispatchers.IO) {
+        val job = coroutineScope.launch(Dispatchers.IO) {
             try {
                 PtyConnectorReader(ptyConnectorDelegate, terminal).start()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 log.error(e.message, e)
+            }
+        }
+        readerJob = job
+        job.invokeOnCompletion {
+            SwingUtilities.invokeLater {
+                if (readerJob === job) TerminalLoggerDataListener.forTerminal(terminal)?.endSession()
             }
         }
     }

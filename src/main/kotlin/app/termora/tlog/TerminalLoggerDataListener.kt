@@ -3,205 +3,132 @@ package app.termora.tlog
 import app.termora.Host
 import app.termora.HostTerminalTab
 import app.termora.I18n
-import app.termora.randomUUID
+import app.termora.TerminalPanelFactory
 import app.termora.terminal.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.onFailure
-import kotlinx.coroutines.channels.onSuccess
-import org.apache.commons.io.IOUtils
-import org.apache.commons.lang3.time.DateFormatUtils
 import org.slf4j.LoggerFactory
 import java.beans.PropertyChangeListener
-import java.io.BufferedWriter
-import java.io.File
-import java.io.FileWriter
-import java.nio.file.Paths
-import java.util.*
-import java.util.concurrent.atomic.AtomicBoolean
+import java.nio.charset.Charset
+import java.time.Instant
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.util.UUID
+import kotlin.time.Duration.Companion.seconds
 
 class TerminalLoggerDataListener(private val terminal: Terminal) : DataListener {
     companion object {
-        /**
-         * 忽略日志的标记
-         */
         val IgnoreTerminalLogger = DataKey(Boolean::class)
+        internal val Recorder = DataKey(TerminalLoggerDataListener::class)
+        private val PtyOutput = DataKey(String::class)
+        private val KeyboardInput = DataKey(String::class)
 
+        internal fun forTerminal(terminal: Terminal): TerminalLoggerDataListener? {
+            val model = terminal.getTerminalModel()
+            return if (model.hasData(Recorder)) model.getData(Recorder) else null
+        }
         private val log = LoggerFactory.getLogger(TerminalLoggerDataListener::class.java)
+        private val filenameTime = DateTimeFormatter.ofPattern("HH_mm_ss_SSS")
     }
 
-    private var coroutineScope: CoroutineScope? = null
-    private var channel: Channel<String>? = null
-    private var file: File? = null
-    private var writer: BufferedWriter? = null
-
-    private val isRecording = AtomicBoolean(false)
-    private val isClosed = AtomicBoolean(false)
-
-    // 监听 Recording 变化，如果已经停止录制，那么立即关闭文件
-    private val terminalLoggerActionPropertyChangeListener = PropertyChangeListener { evt ->
-        if (evt.propertyName == "Recording") {
-            if (evt.newValue == false) {
-                close()
-            }
-        }
+    private val model get() = terminal.getTerminalModel()
+    private val action get() = TerminalLoggerAction.getInstance()
+    private var recording: TerminalLogRecording? = null
+    private var closed = false
+    private var sessionEnded = false
+    private val recordingListener = PropertyChangeListener {
+        if (it.propertyName == "Recording" && it.newValue == false) finish()
     }
-
-    private val host: Host?
-        get() {
-            if (terminal.getTerminalModel().hasData(HostTerminalTab.Host)) {
-                return terminal.getTerminalModel().getData(HostTerminalTab.Host)
-            }
-            return null
-        }
-
 
     init {
         terminal.addTerminalListener(object : TerminalListener {
             override fun onClose(terminal: Terminal) {
-                if (isClosed.compareAndSet(false, true)) {
-                    // 设置为已经关闭
-                    isClosed.set(true)
-
-                    // 移除变动监听
-                    terminal.getTerminalModel().removeDataListener(this@TerminalLoggerDataListener)
-
-                    // 关闭流
-                    close()
+                synchronized(this@TerminalLoggerDataListener) {
+                    closed = true
+                    model.removeDataListener(this@TerminalLoggerDataListener)
+                    finish()
                 }
             }
         })
     }
 
+    internal fun onOutput(text: String) = onChanged(PtyOutput, text)
+
+    internal fun onKeyboardInput(bytes: ByteArray, charset: Charset) {
+        val action = action
+        if (action.isRecording && action.format == TerminalLogFormat.Asciinema && action.recordKeyboard) {
+            onChanged(KeyboardInput, String(bytes, charset))
+        }
+    }
+
+    @Synchronized
+    internal fun startSession() {
+        sessionEnded = false
+    }
+
+    @Synchronized
+    internal fun endSession() {
+        sessionEnded = true
+        finish()
+    }
+
+    @Synchronized
     override fun onChanged(key: DataKey<*>, data: Any) {
-        if (isClosed.get()) {
-            return
-        }
+        if (closed || sessionEnded) return
+        if (key != TextProcessor.Written && key != VisualTerminal.Written &&
+            key != PtyOutput && key != KeyboardInput && key != TerminalModel.Resize
+        ) return
+        if (model.getData(IgnoreTerminalLogger, false) || !model.hasData(HostTerminalTab.Host)) return
 
-        // 如果忽略了，那么跳过
-        if (terminal.getTerminalModel().getData(IgnoreTerminalLogger, false)) {
-            return
-        }
-
-        if (key != VisualTerminal.Written && key != TextProcessor.Written) {
-            return
-        }
-
-        val host = this.host ?: return
-        val action = TerminalLoggerAction.getInstance()
-        if (action.isRecording.not()) {
-            return
+        val action = action
+        if (!action.isRecording) return
+        val format = action.format
+        val event = when (key) {
+            TextProcessor.Written -> if (format == TerminalLogFormat.PlainText) "o" else return
+            VisualTerminal.Written -> if (format == TerminalLogFormat.StyledText) "o" else return
+            PtyOutput -> if (format == TerminalLogFormat.Asciinema) "o" else return
+            KeyboardInput -> if (format == TerminalLogFormat.Asciinema && action.recordKeyboard) "i" else return
+            TerminalModel.Resize -> if (format == TerminalLogFormat.Asciinema && recording != null) "r" else return
+            else -> return
         }
 
         try {
-            if (action.isPlainText) {
-                if (key == TextProcessor.Written) {
-                    tryRecord(data as String, host, action)
-                }
-            } else if (key == VisualTerminal.Written) {
-                tryRecord(data as String, host, action)
-            }
+            val text = if (data is TerminalResize) {
+                if (data.oldSize == data.newSize) return
+                "${data.newSize.cols}x${data.newSize.rows}"
+            } else data as String
+            val current = recording ?: createRecording(model.getData(HostTerminalTab.Host), action)
+            current.record(event, text)
         } catch (e: Exception) {
-            if (log.isErrorEnabled) {
-                log.error(e.message, e)
+            log.error("Could not start terminal log recording", e)
+        }
+    }
+
+    private fun createRecording(host: Host, action: TerminalLoggerAction): TerminalLogRecording {
+        val started = Instant.now()
+        val startNanos = System.nanoTime()
+        val cast = action.format == TerminalLogFormat.Asciinema
+        val extension = if (cast) "cast" else "log"
+        val suffix = if (action.compressZstd) TerminalLogFiles.PendingSuffix else ""
+        val title = host.name.map { c ->
+            if (c.isISOControl() || c in "<>:\"/\\|?*") '_' else c
+        }.joinToString("").take(80).trim(' ', '.').ifBlank { "terminal" }
+        val name = "${LocalTime.now().format(filenameTime)}.$title.${UUID.randomUUID()}.$extension$suffix"
+        val size = TerminalSize(model.getRows(), model.getCols())
+        val header = if (cast) Asciicast.header(size, started, host.name) else null
+        return TerminalLogRecording(action.getLogDir(create = false).toPath().resolve(name), header, started, startNanos).also {
+            recording = it
+            action.addPropertyChangeListener(recordingListener)
+            TerminalLogFiles.write(it) {
+                TerminalPanelFactory.getInstance().getTerminalPanels().firstOrNull { panel -> panel.terminal === terminal }
+                    ?.toast(I18n.getString("termora.terminal-logger.write-error"), 5.seconds)
             }
         }
     }
 
-    private fun tryRecord(text: String, host: Host, action: TerminalLoggerAction) {
-        if (isRecording.compareAndSet(false, true)) {
-
-            val file = createFile(host, action.getLogDir()).apply { file = this }
-            val writer = BufferedWriter(FileWriter(file, false)).apply { writer = this }
-
-            if (log.isInfoEnabled) {
-                log.info("Terminal logger file: ${file.absolutePath}")
-            }
-
-            action.removePropertyChangeListener(terminalLoggerActionPropertyChangeListener)
-            action.addPropertyChangeListener(terminalLoggerActionPropertyChangeListener)
-
-            val coroutineScope =
-                this.coroutineScope ?: CoroutineScope(SupervisorJob() + Dispatchers.IO).apply { coroutineScope = this }
-            val channel = this.channel ?: Channel<String>(Channel.UNLIMITED).apply { channel = this }
-
-            coroutineScope.launch {
-                while (coroutineScope.isActive) {
-                    channel.receiveCatching().onSuccess {
-                        writer.write(it)
-                    }.onFailure { e ->
-                        if (log.isErrorEnabled && e is Throwable) {
-                            log.error(e.message, e)
-                        }
-                    }
-                }
-            }
-
-            val date = DateFormatUtils.format(Date(), I18n.getString("termora.date-format"))
-            channel.trySend("[BEGIN] ---- $date ----").isSuccess
-            channel.trySend("${ControlCharacters.LF}${ControlCharacters.CR}").isSuccess
-        }
-
-        if (isRecording.get()) {
-            channel?.trySend(text)?.isSuccess
-        }
-    }
-
-    private fun createFile(host: Host, dir: File): File {
-        val now = DateFormatUtils.format(Date(), "HH_mm_ss_SSS")
-        val filename = "${dir.absolutePath}${File.separator}${host.name}.${now}.log"
-        return try {
-            // 如果名称中包含 :\\n 等符号会获取失败，那么采用 ID 代替
-            Paths.get(filename).toFile()
-        } catch (e: Exception) {
-            if (log.isErrorEnabled) {
-                log.error(e.message, e)
-            }
-            try {
-                Paths.get(dir.absolutePath, "${host.id}.${now}.log").toFile()
-            } catch (e: Exception) {
-                Paths.get(dir.absolutePath, "${randomUUID()}.${now}.log").toFile()
-            }
-        }
-    }
-
-    private fun close() {
-        if (!isRecording.compareAndSet(true, false)) {
-            return
-        }
-
-        // 移除监听
-        TerminalLoggerAction.getInstance()
-            .removePropertyChangeListener(terminalLoggerActionPropertyChangeListener)
-
-
-        this.channel?.close()
-        this.coroutineScope?.cancel()
-
-        this.channel = null
-        this.coroutineScope = null
-
-        // write end
-        runCatching {
-            val date = DateFormatUtils.format(Date(), I18n.getString("termora.date-format"))
-            this.writer?.write("${ControlCharacters.LF}${ControlCharacters.CR}")
-            this.writer?.write("[END] ---- $date ----")
-        }.onFailure {
-            if (log.isErrorEnabled) {
-                log.error(it.message, it)
-            }
-        }
-
-        IOUtils.closeQuietly(this.writer)
-
-        val file = this.file
-        if (log.isInfoEnabled && file != null) {
-            log.info("Terminal logger file: {} saved", file.absolutePath)
-        }
-
-        this.writer = null
-        this.file = null
-
-
+    @Synchronized
+    private fun finish() {
+        val current = recording ?: return
+        recording = null
+        action.removePropertyChangeListener(recordingListener)
+        current.finish()
     }
 }

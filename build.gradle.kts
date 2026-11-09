@@ -96,6 +96,7 @@ dependencies {
     api(libs.flatlafswingx)
 
     api(libs.kotlinx.serialization.json)
+    implementation(libs.aircompressor)
     api(libs.swingx)
     api(libs.jgoodies.forms)
     api(libs.jna)

@@ -65,6 +65,8 @@ class DataKey<T : Any>(val clazz: KClass<T>) {
          */
         val WindowTitle = DataKey(String::class)
 
+        val AllowClipboardWrite = DataKey(Boolean::class)
+
         /**
          * OSC Icon Title
          */

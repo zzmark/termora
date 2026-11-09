@@ -109,6 +109,7 @@ class OperatingSystemCommandProcessor(terminal: Terminal, reader: TerminalReader
 
             // Ps = 5 2  ⇒  Manipulate Selection Data.  These controls may be disabled using the allowWindowOps resource.  The parameter Pt is parsed as
             52 -> {
+                if (!terminal.getTerminalModel().getData(DataKey.AllowClipboardWrite, true)) return
                 val pair = suffix.split(";", limit = 2).let {
                     Pair(it.first(), it.last())
                 }
