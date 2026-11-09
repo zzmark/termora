@@ -17,6 +17,18 @@ sealed class RdpConfiguration
     public int Port;
     public int Width;
     public int Height;
+    public int DesktopWidth;
+    public int DesktopHeight;
+    public int ColorDepth;
+    public uint DesktopScale;
+    public bool SmartSizing;
+    public uint AudioMode;
+    public bool RedirectMicrophone;
+    public bool RedirectClipboard;
+    public bool RedirectPrinters;
+    public bool RedirectDrives;
+    public bool RedirectSmartCards;
+    public bool BitmapCache;
 
     public static RdpConfiguration ReadFromStandardInput()
     {
@@ -28,7 +40,19 @@ sealed class RdpConfiguration
             Name = ReadValue(),
             Port = Int32.Parse(ReadValue()),
             Width = Int32.Parse(ReadValue()),
-            Height = Int32.Parse(ReadValue())
+            Height = Int32.Parse(ReadValue()),
+            DesktopWidth = Int32.Parse(ReadValue()),
+            DesktopHeight = Int32.Parse(ReadValue()),
+            ColorDepth = Int32.Parse(ReadValue()),
+            DesktopScale = UInt32.Parse(ReadValue()),
+            SmartSizing = Boolean.Parse(ReadValue()),
+            AudioMode = UInt32.Parse(ReadValue()),
+            RedirectMicrophone = Boolean.Parse(ReadValue()),
+            RedirectClipboard = Boolean.Parse(ReadValue()),
+            RedirectPrinters = Boolean.Parse(ReadValue()),
+            RedirectDrives = Boolean.Parse(ReadValue()),
+            RedirectSmartCards = Boolean.Parse(ReadValue()),
+            BitmapCache = Boolean.Parse(ReadValue())
         };
     }
 
@@ -375,7 +399,7 @@ static class RdpComInterop
                     setterPointer,
                     typeof(PutExtendedPropertyDelegate)
                 );
-            variant = Marshal.AllocCoTaskMem(16);
+            variant = Marshal.AllocCoTaskMem(8 + 2 * IntPtr.Size);
             Marshal.GetNativeVariantForObject(value, variant);
             Marshal.ThrowExceptionForHR(
                 setter(extendedSettings, propertyName, variant)
@@ -414,17 +438,22 @@ sealed class RdpDisplayController : IDisposable
     readonly Control activeXHost;
     readonly dynamic client;
     readonly System.Windows.Forms.Timer resizeTimer;
+    readonly Size fixedSessionSize;
+    readonly uint fixedDesktopScale;
     Size pendingSize;
     Size lastSessionSize;
     bool connectStarted;
     bool loginComplete;
     bool disposed;
 
-    public RdpDisplayController(Form form, Control activeXHost, object client)
+    public RdpDisplayController(Form form, Control activeXHost, object client, RdpConfiguration configuration)
     {
         this.form = form;
         this.activeXHost = activeXHost;
         this.client = client;
+        pendingSize = NormalizeSize(configuration.Width, configuration.Height);
+        fixedSessionSize = new Size(configuration.DesktopWidth, configuration.DesktopHeight);
+        fixedDesktopScale = configuration.DesktopScale;
         resizeTimer = new System.Windows.Forms.Timer
         {
             Interval = ResizeDelayMilliseconds
@@ -442,30 +471,32 @@ sealed class RdpDisplayController : IDisposable
         pendingSize = NormalizeSize(width, height);
         ResizeControls(pendingSize);
 
-        if (!connectStarted)
+        if (connectStarted && fixedSessionSize.IsEmpty)
         {
-            ConfigureInitialSession(pendingSize);
-            return;
+            ScheduleSessionResize(
+                loginComplete ? "viewport_changed" : "login_incomplete"
+            );
         }
-
-        ScheduleSessionResize(
-            loginComplete ? "viewport_changed" : "login_incomplete"
-        );
     }
 
     public void OnConnectStarted()
     {
+        var sessionSize = fixedSessionSize.IsEmpty ? pendingSize : fixedSessionSize;
+        ConfigureInitialSession(sessionSize);
         connectStarted = true;
         RdpActiveXHost.WriteLine(
-            "STATE\tDISPLAY_CONNECT_STARTED pendingSize=" +
-            pendingSize.Width + "x" + pendingSize.Height
+            "STATE\tDISPLAY_CONNECT_STARTED size=" + sessionSize.Width + "x" +
+            sessionSize.Height + " fixed=" + !fixedSessionSize.IsEmpty
         );
     }
 
     public void OnLoginComplete()
     {
         loginComplete = true;
-        ScheduleSessionResize("login_complete");
+        if (fixedSessionSize.IsEmpty)
+        {
+            ScheduleSessionResize("login_complete");
+        }
     }
 
     void ConfigureInitialSession(Size size)
@@ -605,8 +636,9 @@ sealed class RdpDisplayController : IDisposable
     DisplaySettings ReadDisplaySettings(Size size)
     {
         var dpi = Math.Max(96, (int)GetDpiForWindow(form.Handle));
-        var desktopScale =
-            (uint)Math.Max(100, Math.Min(500, dpi * 100 / 96));
+        var desktopScale = fixedDesktopScale != 0
+            ? fixedDesktopScale
+            : (uint)Math.Max(100, Math.Min(500, dpi * 100 / 96));
         return new DisplaySettings
         {
             Dpi = dpi,
@@ -968,7 +1000,7 @@ sealed class RdpSessionForm : Form
         Show();
         host.CreateControl();
         client = host.Client;
-        displayController = new RdpDisplayController(this, host, client);
+        displayController = new RdpDisplayController(this, host, client, configuration);
         RdpActiveXHost.WriteLine(
             "STATE\tACTIVEX_CONTROL variant=notSafeForScripting version=12"
         );
@@ -995,15 +1027,19 @@ sealed class RdpSessionForm : Form
             configuration.Server,
             configuration.UserName
         );
-        client.DesktopWidth = configuration.Width;
-        client.DesktopHeight = configuration.Height;
-        client.ColorDepth = 32;
+        client.ColorDepth = configuration.ColorDepth;
         client.ConnectingText = "Connecting to " + configuration.Name + "...";
 
         var advancedSettings = client.AdvancedSettings2;
         advancedSettings.RDPPort = configuration.Port;
-        advancedSettings.SmartSizing = false;
-        advancedSettings.RedirectClipboard = true;
+        advancedSettings.SmartSizing = configuration.SmartSizing;
+        advancedSettings.RedirectClipboard = configuration.RedirectClipboard;
+        advancedSettings.RedirectPrinters = configuration.RedirectPrinters;
+        advancedSettings.RedirectDrives = configuration.RedirectDrives;
+        advancedSettings.RedirectSmartCards = configuration.RedirectSmartCards;
+        advancedSettings.AudioRedirectionMode = configuration.AudioMode;
+        advancedSettings.AudioCaptureRedirectionMode = configuration.RedirectMicrophone;
+        advancedSettings.BitmapPersistence = configuration.BitmapCache ? 1 : 0;
         advancedSettings.EnableWindowsKey = 1;
         advancedSettings.GrabFocusOnConnect = true;
         client.AdvancedSettings7.EnableCredSspSupport = true;

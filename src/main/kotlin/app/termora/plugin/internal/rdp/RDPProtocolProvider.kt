@@ -4,17 +4,16 @@ import app.termora.*
 import app.termora.actions.DataProvider
 import app.termora.protocol.GenericProtocolProvider
 import com.formdev.flatlaf.util.SystemInfo
+import com.sun.jna.platform.win32.Crypt32Util
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.apache.commons.io.FileUtils
-import org.apache.commons.io.IOUtils
 import org.apache.commons.lang3.StringUtils
-import org.apache.commons.lang3.Strings
-import org.apache.commons.lang3.SystemUtils
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.net.URI
+import java.util.HexFormat
 import javax.swing.JOptionPane
 import kotlin.time.Duration.Companion.seconds
 
@@ -38,10 +37,54 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
 
     override fun canCreateTerminalTab(dataProvider: DataProvider, windowScope: WindowScope, host: Host): Boolean {
         if (SystemInfo.isWindows) {
-            return true
+            val settings = RDPSettings.fromExtras(host.options.extras)
+            if (settings.connectionMethod == RDPConnectionMethod.MSTSCAX) return true
+            try {
+                openMstsc(host, settings)
+            } catch (e: Exception) {
+                OptionPane.showMessageDialog(
+                    windowScope.window,
+                    e.localizedMessage,
+                    title = I18n.getString("termora.rdp.error.startup"),
+                    messageType = JOptionPane.ERROR_MESSAGE
+                )
+            }
+        } else {
+            openRDP(windowScope, host)
         }
-        openRDP(windowScope, host)
         return false
+    }
+
+    private fun openMstsc(host: Host, settings: RDPSettings) {
+        require(listOf(host.host, host.username).none { '\r' in it || '\n' in it || '\u0000' in it }) {
+            I18n.getString("termora.new-host.rdp.invalid-address")
+        }
+        val address = if (':' in host.host) "[${host.host.removeSurrounding("[", "]")}]" else host.host
+        val configuration = buildString {
+            appendLine("full address:s:$address:${host.port}")
+            appendLine("username:s:${host.username}")
+            settings.appendMstscProperties(this)
+            if (host.authentication.type == AuthenticationType.Password && host.authentication.password.isNotEmpty()) {
+                val password = host.authentication.password.toByteArray(Charsets.UTF_16LE)
+                val encrypted = try {
+                    runCatching { Crypt32Util.cryptProtectData(password) }.getOrNull()
+                } finally {
+                    password.fill(0)
+                }
+                if (encrypted != null) {
+                    appendLine("password 51:b:${HexFormat.of().formatHex(encrypted)}")
+                }
+            }
+        }
+        val file = FileUtils.getFile(Application.getTemporaryDir(), randomUUID() + ".rdp")
+        try {
+            file.writeText("\uFEFF" + configuration.replace("\n", "\r\n"), Charsets.UTF_16LE)
+            val mstsc = FileUtils.getFile(System.getenv("WINDIR") ?: "C:\\Windows", "System32", "mstsc.exe")
+            ProcessBuilder(mstsc.absolutePath, file.absolutePath).start()
+        } catch (e: Exception) {
+            FileUtils.deleteQuietly(file)
+            throw e
+        }
     }
 
     private fun openRDP(windowScope: WindowScope, host: Host) {
@@ -69,17 +112,9 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
         }
 
         val sb = StringBuilder()
-        sb.append("full address:s:")
-        if (SystemUtils.IS_OS_WINDOWS && Strings.CI.contains(host.host, ":")) {
-            var newHost = Strings.CI.removeStart(host.host, "[")
-            newHost = Strings.CI.removeEnd(newHost, "]")
-            sb.append('[').append(newHost).append(']')
-        } else {
-            sb.append(host.host)
-        }
-        sb.append(':').append(host.port).appendLine()
+        sb.append("full address:s:").append(host.host).append(':').append(host.port).appendLine()
         sb.append("username:s:").append(host.username).appendLine()
-        val desktop = host.options.extras["desktop"]
+        val desktop = host.options.extras[RDPSettings.DESKTOP]
         if (desktop.isNullOrBlank().not()) {
             val resolution = desktop.split("x")
             if (resolution.size == 2) {
@@ -89,39 +124,19 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
                 sb.append("desktopheight:i:").append(resolution.last()).appendLine()
 
                 // macOS 上需要关闭动态分辨率，否则分辨率可能不生效
-                if (SystemInfo.isMacOS) {
-                    sb.append("dynamic resolution:i:0").appendLine()
-                }
+                sb.append("dynamic resolution:i:0").appendLine()
             }
         }
 
         if (host.authentication.type == AuthenticationType.Password) {
             val password = host.authentication.password
-            var ep = StringUtils.EMPTY
-
-            if (SystemInfo.isWindows) {
-                val cmd = "ConvertTo-SecureString '${password}' -AsPlainText -Force | ConvertFrom-SecureString"
-                val process = ProcessBuilder("powershell.exe", "-NoProfile", "-Command", cmd).start()
-                if (process.waitFor() == 0) {
-                    ep = String(process.inputStream.readAllBytes())
-                }
-            }
-
-            if (ep.isNotBlank()) {
-                sb.append("password 51:b:").append(ep).appendLine()
-            }
-
-            // 如果获取加密密码失败，那么依然要走剪切板
-            if (ep.isBlank() || SystemInfo.isMacOS) {
-                val systemClipboard = windowScope.window.toolkit.systemClipboard
-                systemClipboard.setContents(StringSelection(password), null)
-                // clear password
-                swingCoroutineScope.launch(Dispatchers.IO) {
-                    delay(30.seconds)
-                    if (systemClipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
-                        if (systemClipboard.getData(DataFlavor.stringFlavor) == password) {
-                            systemClipboard.setContents(StringSelection(StringUtils.EMPTY), null)
-                        }
+            val systemClipboard = windowScope.window.toolkit.systemClipboard
+            systemClipboard.setContents(StringSelection(password), null)
+            swingCoroutineScope.launch(Dispatchers.IO) {
+                delay(30.seconds)
+                if (systemClipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
+                    if (systemClipboard.getData(DataFlavor.stringFlavor) == password) {
+                        systemClipboard.setContents(StringSelection(StringUtils.EMPTY), null)
                     }
                 }
             }
@@ -129,13 +144,8 @@ internal class RDPProtocolProvider private constructor() : GenericProtocolProvid
 
 
         val file = FileUtils.getFile(Application.getTemporaryDir(), randomUUID() + ".rdp")
-        file.outputStream().use { IOUtils.write(sb.toString(), it, Charsets.UTF_8) }
-
-        if (SystemInfo.isMacOS) {
-            ProcessBuilder("open", file.absolutePath).start()
-        } else if (SystemInfo.isWindows) {
-            ProcessBuilder("mstsc", file.absolutePath).start()
-        }
+        file.writeText(sb.toString())
+        ProcessBuilder("open", file.absolutePath).start()
 
     }
 }

@@ -6,9 +6,9 @@ import app.termora.plugin.internal.BasicProxyOption
 import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.components.FlatComboBox
 import com.formdev.flatlaf.ui.FlatTextBorder
+import com.formdev.flatlaf.util.SystemInfo
 import com.jgoodies.forms.builder.FormBuilder
 import com.jgoodies.forms.layout.FormLayout
-import org.apache.commons.lang3.StringUtils
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.KeyboardFocusManager
@@ -21,10 +21,12 @@ import javax.swing.*
 internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) : OptionsPane() {
     protected val generalOption = GeneralOption()
     protected val proxyOption = BasicProxyOption()
+    private val rdpOption = if (SystemInfo.isWindows) RDPDisplayOption() else null
     protected val owner: Window get() = SwingUtilities.getWindowAncestor(this)
 
     init {
         addOption(generalOption)
+        rdpOption?.let(::addOption)
         addOption(proxyOption)
 
     }
@@ -38,7 +40,9 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
         var authentication = Authentication.Companion.No
         var proxy = Proxy.Companion.No
         val authenticationType = generalOption.authenticationTypeComboBox.selectedItem as AuthenticationType
-        val desktop = generalOption.desktopTextField.text.trim()
+        val rdpExtras = rdpOption?.getSettings(
+            RDPConnectionMethod.entries[generalOption.connectionMethodComboBox.selectedIndex]
+        )?.toExtras() ?: mapOf(RDPSettings.DESKTOP to generalOption.desktopTextField.text.trim())
 
         if (authenticationType == AuthenticationType.Password) {
             authentication = authentication.copy(
@@ -69,7 +73,7 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
             proxy = proxy,
             sort = System.currentTimeMillis(),
             remark = generalOption.remarkTextArea.text,
-            options = Options.Default.copy(extras = mutableMapOf("desktop" to desktop))
+            options = Options.Default.copy(extras = rdpExtras)
         )
     }
 
@@ -83,7 +87,14 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
         if (host.authentication.type == AuthenticationType.Password) {
             generalOption.passwordTextField.text = host.authentication.password
         }
-        generalOption.desktopTextField.text = host.options.extras["desktop"] ?: StringUtils.EMPTY
+        val desktop = host.options.extras[RDPSettings.DESKTOP].orEmpty()
+        if (rdpOption != null) {
+            val settings = RDPSettings.fromExtras(host.options.extras)
+            generalOption.connectionMethodComboBox.selectedIndex = settings.connectionMethod.ordinal
+            rdpOption.setSettings(settings, desktop)
+        } else {
+            generalOption.desktopTextField.text = desktop
+        }
 
         proxyOption.proxyTypeComboBox.selectedItem = host.proxy.type
         proxyOption.proxyHostTextField.text = host.proxy.host
@@ -131,10 +142,18 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
             }
         }
 
-        val desktop = generalOption.desktopTextField.text.trim()
-        if (desktop.isNotBlank() && desktop.matches(Regex("^\\d+x\\d+$")).not()) {
-            setOutlineError(generalOption.desktopTextField)
-            return false
+        if (rdpOption != null) {
+            if (rdpOption.resolutionField.isEnabled && RDPResolution.parse(rdpOption.resolutionText) == null) {
+                setOutlineError(rdpOption.resolutionField)
+                return false
+            }
+            rdpOption.resolutionField.outline = null
+        } else {
+            val desktop = generalOption.desktopTextField.text.trim()
+            if (desktop.isNotBlank() && !desktop.matches(Regex("^\\d+x\\d+$"))) {
+                setOutlineError(generalOption.desktopTextField)
+                return false
+            }
         }
 
         return true
@@ -163,6 +182,10 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
         val usernameTextField = OutlineTextField(128)
         val hostTextField = OutlineTextField(255)
         val desktopTextField = OutlineTextField(255)
+        val connectionMethodComboBox = FlatComboBox<String>().apply {
+            addItem(I18n.getString("termora.new-host.rdp.connection-activex"))
+            addItem(I18n.getString("termora.new-host.rdp.connection-external"))
+        }
         val passwordTextField = OutlinePasswordField(255)
         val remarkTextArea = FixedLengthTextArea(512)
         val authenticationTypeComboBox = FlatComboBox<AuthenticationType>()
@@ -286,8 +309,16 @@ internal open class RDPHostOptionsPane(private val accountOwner: AccountOwner) :
                 .add("${I18n.getString("termora.new-host.general.password")}:").xy(1, rows)
                 .add(passwordTextField).xyw(3, rows, 5).apply { rows += step }
 
-                .add("${I18n.getString("termora.new-host.rdp.resolution")}:").xy(1, rows)
-                .add(desktopTextField).xyw(3, rows, 5).apply { rows += step }
+                .apply {
+                    if (SystemInfo.isWindows) {
+                        add("${I18n.getString("termora.new-host.rdp.connection-method")}:").xy(1, rows)
+                        add(connectionMethodComboBox).xyw(3, rows, 5)
+                    } else {
+                        add("${I18n.getString("termora.new-host.rdp.resolution")}:").xy(1, rows)
+                        add(desktopTextField).xyw(3, rows, 5)
+                    }
+                    rows += step
+                }
 
                 .add("${I18n.getString("termora.new-host.general.remark")}:").xy(1, rows)
                 .add(JScrollPane(remarkTextArea).apply { border = FlatTextBorder() })
